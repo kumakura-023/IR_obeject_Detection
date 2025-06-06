@@ -5,6 +5,12 @@ import math
 from collections import defaultdict
 from typing import Dict, Optional, List, Tuple
 
+
+# ★★★ ステップ1: バージョン情報をここに追加 ★★★
+# ファイルを修正するたびに、この文字列を更新してください。
+__loss_version__ = "v1.4 - lossテストバージョン"
+
+
 # ===== IoU Loss Functions =====
 def bbox_ciou(box1: torch.Tensor, box2: torch.Tensor, eps: float = 1e-7) -> torch.Tensor:
     """
@@ -364,6 +370,9 @@ def create_enhanced_loss(num_classes: int = 15,
     Returns:
         EnhancedDetectionLoss
     """
+
+    print(f"--- 読み込み中の損失ファイル: unified_loss.py ({__loss_version__}) ---")
+
     strategies = {
         'balanced': {
             'lambda_box': 5.0,
