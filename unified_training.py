@@ -520,7 +520,8 @@ class TrainingConfig:
         self.initial_lr = 1e-3
         self.max_lr = 1e-3
         self.min_lr = 1e-6
-        
+        self.warmup_steps = 500  # <<< この行を追加してください
+
         # Loss重み（初期値）
         self.loss_weights = {
             'box': 5.0,
@@ -854,7 +855,6 @@ def main():
                     preds, target_dict, loss_fn, model, optimizer, 
                     batch_idx, epoch, debug_tracker, step_counter, root_investigator
                 )
-                step_counter += 1
                 
                 # Gradient Accumulation
                 loss = loss_dict["total"] / config.accumulation_steps
@@ -869,15 +869,10 @@ def main():
                 # Gradient Step
                 if (batch_idx + 1) % config.accumulation_steps == 0:
 
-                    if step_counter < 1000:
-                        warmup_lr = config.initial_lr * (step_counter / 1000) * 0.1
-                        for param_group in optimizer.param_groups:
-                            param_group['lr'] = warmup_lr
-
-                    # 勾配クリッピング
+                    # 勾配クリッピング (値を1.0に調整し、安定性を向上)
                     if scaler:
                         scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     
                     # オプティマイザステップ
                     if scaler:
@@ -886,9 +881,21 @@ def main():
                     else:
                         optimizer.step()
                     
-                    # スケジューラステップ
-                    current_lr = scheduler.step()
-                    
+                    # オプティマイザのステップごとにカウンターを増やす (正しい場所に移動)
+                    step_counter += 1
+
+                    # 学習率の更新 (安定したウォームアップとスケジューラ)
+                    current_lr = 0.0
+                    if step_counter < config.warmup_steps:
+                        # 線形ウォームアップ
+                        lr_scale = (step_counter + 1) / config.warmup_steps
+                        current_lr = config.initial_lr * lr_scale
+                        for g in optimizer.param_groups:
+                            g['lr'] = current_lr
+                    else:
+                        # ウォームアップ後はスケジューラを適用
+                        current_lr = scheduler.step()
+
                     optimizer.zero_grad()
                     
                     # メトリクス記録
