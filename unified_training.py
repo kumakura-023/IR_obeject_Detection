@@ -655,7 +655,7 @@ def main():
     print(f"📱 Device: {config.device}")
     print(f"🎯 Target: {config.num_classes} classes")
     print(f"📏 Input size: {config.input_size}")
-    print("ver 2.3 - Corrected for Latest Project Structure")
+    print("ver 1.3-gemini - Corrected for Latest Project Structure")
     
     # テスト用コード
     from efficientnet_model import test_model_creation
