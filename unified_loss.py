@@ -249,17 +249,11 @@ class EnhancedDetectionLoss(nn.Module):
             )
         
         # ===== 修正2: Objectness Loss の改善 =====
-        # IoU変調された値をそのまま使用（バイナリ化しない）
-        # これにより、品質に応じた学習が可能
-        if isinstance(self.obj_loss_fn, AdaptiveFocalLoss):
-            # Focal Lossの場合はバイナリターゲットが必要
-            obj_target_binary = (target_obj > 0.1).float()  # 閾値を0.5→0.3に下げる
-            loss_obj = self.obj_loss_fn(pred_obj, obj_target_binary)
-        else:
-            # 通常のBCEの場合はIoU変調値をそのまま使用
-            loss_obj = F.binary_cross_entropy_with_logits(
-                pred_obj, target_obj.clamp(0, 1), reduction='mean'
-            )
+        # ★★★【実験】勾配爆発の原因切り分けのため、Focal Lossを一時的に無効化 ★★★
+        # 最も安定した標準のBCE損失で計算し、勾配爆発が収まるかを確認する。
+        obj_target_binary = (target_obj > 0.1).float()
+        loss_obj = F.binary_cross_entropy_with_logits(pred_obj, obj_target_binary, reduction='mean')
+
         
         # ===== 修正3: Classification Loss の改善 =====
         loss_cls = torch.tensor(0.0, device=device)
