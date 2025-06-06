@@ -310,6 +310,11 @@ def build_targets(targets: List[torch.Tensor],
                     anchor_w, anchor_h = anchors[anchor_idx]
                     tw = torch.log(gt_w / anchor_w + 1e-8)
                     th = torch.log(gt_h / anchor_h + 1e-8)
+
+                    # ★★★ 根本的な修正：ターゲット値の爆発を防ぐ ★★★
+                    # twとthを安定した範囲（-5.0 ~ 5.0）にクランプ(制限)する
+                    tw = torch.clamp(tw, -5.0, 5.0)
+                    th = torch.clamp(th, -5.0, 5.0)
                     
                     # ===== 修正：IoU変調を緩和 =====
                     iou_score = ious[anchor_idx].item()
