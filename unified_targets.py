@@ -211,7 +211,7 @@ def build_targets(targets: List[torch.Tensor],
                   input_size: Tuple[int, int],
                   num_classes: int, 
                   device: torch.device,
-                  anchor_threshold: float = 0.2) -> Dict[str, torch.Tensor]:
+                  anchor_threshold: float = 0.1) -> Dict[str, torch.Tensor]:
     """
     ターゲット構築（修正版：IoU変調を緩和）
     """
@@ -315,14 +315,12 @@ def build_targets(targets: List[torch.Tensor],
                     iou_score = ious[anchor_idx].item()
                     
                     # IoU変調を控えめにする
-                    if iou_score > 0.7:
-                        # 高IoUの場合は元の値をほぼ保持
+                    if iou_score > 0.5:  # 0.7 → 0.5
                         obj_modulation = 1.0
                         cls_modulation = 1.0
-                    elif iou_score > 0.5:
-                        # 中IoUの場合は軽い変調
-                        obj_modulation = 0.8 + 0.2 * iou_score
-                        cls_modulation = 0.9
+                    elif iou_score > 0.3:  # 0.5 → 0.3
+                        obj_modulation = 0.9
+                        cls_modulation = 0.85
                     elif iou_score > 0.3:
                         # 低IoUの場合は適度な変調
                         obj_modulation = 0.6 + 0.4 * iou_score

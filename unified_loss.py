@@ -172,10 +172,10 @@ class EnhancedDetectionLoss(nn.Module):
         # Objectness Loss
         if obj_loss_type == 'adaptive_focal':
             self.obj_loss_fn = AdaptiveFocalLoss(
-                alpha=0.25,  # 0.75 → 0.25（正サンプルへのペナルティを緩和）
-                gamma=1.0,   # 1.5 → 1.0（初期は緩く）
-                adaptive_gamma=True
-            )
+            alpha=0.75,    # 0.25 → 0.75（正サンプルへの重みを増加）
+            gamma=2.0,     # 1.0 → 2.0（easy negativesをより強く抑制）
+            adaptive_gamma=True
+        )
         else:
             self.obj_loss_fn = AdaptiveFocalLoss(alpha=0.25, gamma=2.0)
         

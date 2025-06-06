@@ -868,10 +868,16 @@ def main():
                 
                 # Gradient Step
                 if (batch_idx + 1) % config.accumulation_steps == 0:
+
+                    if step_counter < 1000:
+                        warmup_lr = config.initial_lr * (step_counter / 1000) * 0.1
+                        for param_group in optimizer.param_groups:
+                            param_group['lr'] = warmup_lr
+
                     # 勾配クリッピング
                     if scaler:
                         scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
                     
                     # オプティマイザステップ
                     if scaler:
