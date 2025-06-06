@@ -193,13 +193,8 @@ class SafeDetectionHead(nn.Module):
         # Concatenate all outputs
         out = torch.cat([out_p1, out_p2, out_p3], dim=1)
 
-        # 出力変換
-        xy = torch.sigmoid(out[..., 0:2])
-        wh = torch.exp(torch.clamp(out[..., 2:4], min=-4.0, max=4.0))
-        obj = out[..., 4:5]  # sigmoid適用前
-        cls = out[..., 5:]   # sigmoid適用前
-        
-        out = torch.cat([xy, wh, obj, cls], dim=-1)
+        # ★★★ 根本的な修正：活性化関数を適用せず、生のlogitsを返す ★★★
+        # 損失計算に必要なのは生の予測値のため、ここでは何もせずそのまま返す。
         return out
 
 # EfficientNet Detection Model（修正版）
