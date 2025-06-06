@@ -255,6 +255,17 @@ class LossDebugTracker:
                 print(f"   🚨 Sharp drop detected at step {self.step_history[i]['step']}")
                 break
 
+def check_for_nan_gradients(model, step):
+    """モデル全体の勾配にNaNが含まれているかチェックする"""
+    nan_found = False
+    for name, param in model.named_parameters():
+        if param.grad is not None and torch.isnan(param.grad).any():
+            print(f"🚨🚨🚨 NaN GRADIENT DETECTED IN ==> {name} at step {step}")
+            nan_found = True
+    if nan_found:
+        # NaNが見つかった場合、デバッガを起動する（Colabで有効）
+        import pdb; pdb.set_trace()
+    return nan_found
 
 class RootCauseInvestigator:
     """予測値崩壊の根本原因を調査"""
@@ -860,11 +871,19 @@ def main():
                 loss = loss_dict["total"] / config.accumulation_steps
                 accumulated_loss += loss.item()
                 
+                # ★★★ デバッグ出力1: backward直前のlossの値 ★★★
+                print(f"--- Step {step_counter} | Loss before backward: {loss.item():.6f} ---")
+
                 # Backward pass
                 if scaler:
                     scaler.scale(loss).backward()
                 else:
                     loss.backward()
+
+                # ★★★ デバッグ出力2: backward直後の勾配をチェック ★★★
+                if check_for_nan_gradients(model, step_counter):
+                    print("!!! TRAINING HALTED DUE TO NaN GRADIENT !!!")
+                    return # NaNが見つかったら学習を停止
                 
                 # Gradient Step
                 if (batch_idx + 1) % config.accumulation_steps == 0:
