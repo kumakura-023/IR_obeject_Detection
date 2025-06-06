@@ -682,6 +682,10 @@ def main():
     root_investigator = RootCauseInvestigator()
     step_counter = 0
     
+    # ★★★【最終切り分け実験】AMPを無効化する ★★★
+    use_amp = False  # torch.cuda.is_available() から False に変更
+    print("--- ⚠️【診断モード】AMP（自動混合精度計算）を無効化して実行します ---")
+
     # AMP設定
     use_amp = torch.cuda.is_available()
     if use_amp:

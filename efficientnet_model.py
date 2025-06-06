@@ -107,15 +107,14 @@ class AdaptiveFPN(nn.Module):
         p2 = self.lateral_convs[1](feat2)
         p3 = self.lateral_convs[2](feat3)
         
-        # Top-down pathway（サイズを動的に調整）
+         # Top-down pathway（サイズを動的に調整）
         h2, w2 = p2.shape[2], p2.shape[3]
         h1, w1 = p1.shape[2], p1.shape[3]
         
-        # p3をp2のサイズにリサイズ
-        p2 = p2 + F.interpolate(p3, size=(h2, w2), mode='nearest')
+        # ★★★【最終手段】アップサンプリング手法を 'bilinear' に変更して安定性を確保 ★★★
+        p2 = p2 + F.interpolate(p3, size=(h2, w2), mode='bilinear', align_corners=False)
         
-        # p2をp1のサイズにリサイズ  
-        p1 = p1 + F.interpolate(p2, size=(h1, w1), mode='nearest')
+        p1 = p1 + F.interpolate(p2, size=(h1, w1), mode='bilinear', align_corners=False)
         
         # Final output convolutions
         p1 = self.output_convs[0](p1)
