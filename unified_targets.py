@@ -2,10 +2,12 @@
 # Obj Loss異常値問題を解決
 
 import torch
+import torch.nn.functional as F
 import numpy as np
 from collections import defaultdict
 import matplotlib.pyplot as plt
 import time
+from scipy.optimize import linear_sum_assignment
 from typing import List, Tuple, Dict, Optional
 
 # ===== ユーティリティ関数 =====
@@ -204,151 +206,123 @@ def prepare_anchor_grid_info(anchors_pixel_per_level: List[List[Tuple[int, int]]
     }
 
 
-def build_targets(targets: List[torch.Tensor], 
-                  anchors_pixel_per_level: List[List[Tuple[int, int]]],
-                  strides_per_level: List[int],
-                  grid_sizes: List[Tuple[int, int]], 
-                  input_size: Tuple[int, int],
-                  num_classes: int, 
-                  device: torch.device,
-                  anchor_threshold: float = 0.1) -> Dict[str, torch.Tensor]:
-    """
-    ターゲット構築（修正版：IoU変調を緩和）
-    """
-    B = len(targets)
-    img_w, img_h = input_size
+def build_targets(
+    predictions: torch.Tensor,
+    targets: List[torch.Tensor],
+    anchor_info: Dict,
+    num_classes: int,
+    topk_candidates: int = 10,
+    iou_threshold: float = 0.5,
+):
     
-    # 全予測数を計算
-    total_predictions = 0
-    for level_idx, (grid_h, grid_w) in enumerate(grid_sizes):
-        num_anchors = len(anchors_pixel_per_level[level_idx])
-        total_predictions += grid_h * grid_w * num_anchors
+    B, N, C = predictions.shape
+    device = predictions.device
     
-    # 統一ターゲットテンソル初期化
-    unified_targets = torch.zeros((B, total_predictions, 5 + num_classes), 
-                                 device=device, dtype=torch.float32)
+    # アンカーグリッド情報
+    anchor_points = anchor_info['anchor_points']
+    strides = anchor_info['strides']
     
-    # 各バッチアイテムを処理
-    for b_idx, batch_targets in enumerate(targets):
+    # ターゲットテンソル初期化
+    target_boxes = torch.zeros((B, N, 4), device=device)
+    target_obj = torch.zeros((B, N), device=device)
+    target_cls = torch.zeros((B, N, num_classes), device=device)
+    
+    for b_idx in range(B):
+        batch_targets = targets[b_idx]
         if len(batch_targets) == 0:
             continue
-            
-        gt_data = batch_targets.to(device) if torch.is_tensor(batch_targets) else \
-                  torch.tensor(batch_targets, device=device, dtype=torch.float32)
-        
-        if gt_data.size(0) == 0:
-            continue
-        
-        # GT情報を抽出
-        gt_boxes_rel = gt_data[:, :4]  # (cx, cy, w, h) in 0-1
-        gt_objectness = gt_data[:, 4]
-        gt_classes = gt_data[:, 5:] if gt_data.size(1) > 5 else torch.zeros((gt_data.size(0), num_classes), device=device)
-        
-        # 有効なGTのみフィルタ
-        valid_mask = (gt_boxes_rel[:, 2] > 0) & (gt_boxes_rel[:, 3] > 0) & (gt_objectness > 0)
-        if not valid_mask.any():
-            continue
-            
-        gt_boxes_rel = gt_boxes_rel[valid_mask]
-        gt_objectness = gt_objectness[valid_mask]
-        gt_classes = gt_classes[valid_mask]
-        
-        # GTボックスをピクセル単位に変換
-        gt_boxes_pixel = gt_boxes_rel * torch.tensor([img_w, img_h, img_w, img_h], device=device)
-        
-        # 各FPNレベルで処理
-        current_offset = 0
-        for level_idx, (grid_h, grid_w) in enumerate(grid_sizes):
-            stride = strides_per_level[level_idx]
-            anchors = torch.tensor(anchors_pixel_per_level[level_idx], device=device, dtype=torch.float32)
-            num_anchors = len(anchors)
-            
-            # GT中心のグリッド座標を計算
-            gt_cx = gt_boxes_pixel[:, 0]
-            gt_cy = gt_boxes_pixel[:, 1]
-            grid_x = (gt_cx / stride).long().clamp(0, grid_w - 1)
-            grid_y = (gt_cy / stride).long().clamp(0, grid_h - 1)
-            
-            # 各GTに対してアンカーを割り当て
-            for gt_idx in range(len(gt_boxes_pixel)):
-                gt_w = gt_boxes_pixel[gt_idx, 2]
-                gt_h = gt_boxes_pixel[gt_idx, 3]
-                
-                # IoU計算（簡易版）
-                ious = []
-                for anchor_w, anchor_h in anchors:
-                    inter_w = min(gt_w, anchor_w)
-                    inter_h = min(gt_h, anchor_h)
-                    inter_area = inter_w * inter_h
-                    union_area = gt_w * gt_h + anchor_w * anchor_h - inter_area
-                    iou = inter_area / (union_area + 1e-8)
-                    ious.append(iou)
-                
-                ious = torch.tensor(ious, device=device)
-                
-                # 閾値以上のアンカーまたは最良のアンカーを選択
-                matched_anchors = torch.where(ious > anchor_threshold)[0]
-                if len(matched_anchors) == 0:
-                    matched_anchors = [ious.argmax().item()]
-                
-                # 各マッチしたアンカーに対してターゲットを設定
-                for anchor_idx in matched_anchors:
-                    # ターゲットインデックス計算
-                    target_idx = current_offset + \
-                                anchor_idx * grid_h * grid_w + \
-                                grid_y[gt_idx] * grid_w + \
-                                grid_x[gt_idx]
-                    
-                    if target_idx >= total_predictions:
-                        continue
-                    
-                    # オフセット計算
-                    tx = (gt_cx[gt_idx] / stride) - grid_x[gt_idx].float()
-                    ty = (gt_cy[gt_idx] / stride) - grid_y[gt_idx].float()
-                    
-                    # スケール計算
-                    anchor_w, anchor_h = anchors[anchor_idx]
-                    tw = torch.log(gt_w / anchor_w + 1e-8)
-                    th = torch.log(gt_h / anchor_h + 1e-8)
 
-                    # ★★★ 根本的な修正：ターゲット値の爆発を防ぐ ★★★
-                    # twとthを安定した範囲（-5.0 ~ 5.0）にクランプ(制限)する
-                    tw = torch.clamp(tw, -5.0, 5.0)
-                    th = torch.clamp(th, -5.0, 5.0)
-                    
-                    # ===== 修正：IoU変調を緩和 =====
-                    iou_score = ious[anchor_idx].item()
-                    
-                    # IoU変調を控えめにする
-                    if iou_score > 0.5:  # 0.7 → 0.5
-                        obj_modulation = 1.0
-                        cls_modulation = 1.0
-                    elif iou_score > 0.3:  # 0.5 → 0.3
-                        obj_modulation = 0.9
-                        cls_modulation = 0.85
-                    elif iou_score > 0.3:
-                        # 低IoUの場合は適度な変調
-                        obj_modulation = 0.6 + 0.4 * iou_score
-                        cls_modulation = 0.7
-                    else:
-                        # 極低IoUの場合のみ強い変調
-                        obj_modulation = iou_score
-                        cls_modulation = iou_score * 0.5
-                    
-                    # ターゲット設定
-                    unified_targets[b_idx, target_idx, 0] = tx
-                    unified_targets[b_idx, target_idx, 1] = ty
-                    unified_targets[b_idx, target_idx, 2] = tw
-                    unified_targets[b_idx, target_idx, 3] = th
-                    unified_targets[b_idx, target_idx, 4] = gt_objectness[gt_idx] * obj_modulation
-                    unified_targets[b_idx, target_idx, 5:] = gt_classes[gt_idx] * cls_modulation
+        gt_boxes = batch_targets[:, :4] * torch.tensor([*anchor_info['input_size']], device=device).repeat(2)
+        gt_classes = batch_targets[:, 5:]
+        num_gt = len(gt_boxes)
+
+        # 1. 候補領域の選定
+        is_in_box_list = []
+        is_in_center_list = []
+        
+        for grid_idx, (grid_h, grid_w) in enumerate(anchor_info['grid_sizes']):
+            stride = strides[grid_idx]
+            anchor_grid = anchor_points[grid_idx]
             
-            current_offset += num_anchors * grid_h * grid_w
-    
+            # GTボックスの中心がどのグリッドセル内にあるか
+            gt_cx, gt_cy = gt_boxes[:, 0], gt_boxes[:, 1]
+            
+            # 中心から半径stride/2の正方形を候補領域とする
+            x_lim = gt_cx.unsqueeze(1) + torch.stack([-stride/2, stride/2], dim=-1)
+            y_lim = gt_cy.unsqueeze(1) + torch.stack([-stride/2, stride/2], dim=-1)
+            
+            is_in_center = (anchor_grid[:, 0] > x_lim[:, 0]) & (anchor_grid[:, 0] < x_lim[:, 1]) & \
+                           (anchor_grid[:, 1] > y_lim[:, 0]) & (anchor_grid[:, 1] < y_lim[:, 1])
+            
+            is_in_center_list.append(is_in_center.T)
+        
+        is_in_center = torch.cat(is_in_center_list, dim=0)
+        
+        # 2. コスト計算
+        pred_logits = predictions[b_idx]
+        pred_boxes = pred_logits[:, :4]
+        pred_obj = pred_logits[:, 4]
+        pred_cls = pred_logits[:, 5:]
+        
+        candidate_mask = is_in_center.any(dim=1)
+        candidate_preds_box = pred_boxes[candidate_mask]
+        candidate_preds_obj = pred_obj[candidate_mask]
+        candidate_preds_cls = pred_cls[candidate_mask]
+        
+        # IoUコスト
+        pair_wise_iou = get_ious(gt_boxes, candidate_preds_box, box_format='xywh')
+        iou_cost = -torch.log(pair_wise_iou + 1e-8)
+        
+        # クラス分類コスト
+        gt_cls_matrix = F.one_hot(torch.argmax(gt_classes, dim=1), num_classes).float()
+        pred_cls_sigmoid = candidate_preds_cls.sigmoid()
+        
+        cls_cost = F.binary_cross_entropy(
+            pred_cls_sigmoid.unsqueeze(0).repeat(num_gt, 1, 1),
+            gt_cls_matrix.unsqueeze(1).repeat(1, len(candidate_preds_cls), 1),
+            reduction='none'
+        ).sum(-1)
+        
+        cost_matrix = cls_cost + 3.0 * iou_cost
+        
+        # 3. Dynamic K マッチング
+        matching_matrix = torch.zeros_like(cost_matrix)
+        
+        # 各GTに対して、最もコストの低い10個の候補を選択
+        n_candidate_k = min(topk_candidates, len(candidate_preds_box))
+        topk_ious, _ = torch.topk(pair_wise_iou, n_candidate_k, dim=1)
+        
+        # 各GTのkを動的に決定
+        dynamic_ks = torch.clamp(topk_ious.sum(1).int(), min=1)
+        
+        for gt_i in range(num_gt):
+            _, pos_idx = torch.topk(cost_matrix[gt_i], k=dynamic_ks[gt_i], largest=False)
+            matching_matrix[gt_i, pos_idx] = 1.0
+
+        del topk_ious, dynamic_ks, pos_idx
+
+        # 4. ターゲット割り当て
+        anchor_matching_gt = matching_matrix.sum(0)
+        if (anchor_matching_gt > 1).any():
+            _, cost_argmin = torch.min(cost_matrix[:, anchor_matching_gt > 1], dim=0)
+            matching_matrix[:, anchor_matching_gt > 1] *= 0.0
+            matching_matrix[cost_argmin, anchor_matching_gt > 1] = 1.0
+        
+        fg_mask_in_cand = (matching_matrix.sum(0) > 0)
+        matched_gt_inds = matching_matrix[:, fg_mask_in_cand].argmax(0)
+        
+        candidate_indices = torch.where(candidate_mask)[0]
+        final_pos_indices = candidate_indices[fg_mask_in_cand]
+        
+        # 最終的なターゲットを作成
+        target_obj[b_idx, final_pos_indices] = 1.0
+        target_cls[b_idx, final_pos_indices] = gt_classes[matched_gt_inds]
+        target_boxes[b_idx, final_pos_indices] = gt_boxes[matched_gt_inds]
+
     return {
-        'boxes': unified_targets[..., :4],      # tx, ty, tw, th
-        'objectness': unified_targets[..., 4],  # 緩和されたIoU変調objectness
-        'classes': unified_targets[..., 5:]     # 緩和されたIoU変調classes
+        'boxes': target_boxes,
+        'objectness': target_obj,
+        'classes': target_cls
     }
 
 
@@ -491,3 +465,43 @@ def compare_anchor_sets(dataset, anchors_set1: List[List[Tuple[int, int]]],
         print("   ⚠️ Limited improvement. Consider different strategies.")
     
     return comparison
+
+def get_default_anchors() -> List[List[Tuple[int, int]]]:
+    """デフォルトアンカー（YOLOv3ベース）"""
+    return [
+        [(10,13), (16,30), (33,23)],
+        [(30,61), (62,45), (59,119)],
+        [(116,90), (156,198), (373,326)]
+    ]
+
+def xywh2xyxy(x):
+    y = x.new(x.shape)
+    y[..., 0] = x[..., 0] - x[..., 2] / 2
+    y[..., 1] = x[..., 1] - x[..., 3] / 2
+    y[..., 2] = x[..., 0] + x[..., 2] / 2
+    y[..., 3] = x[..., 1] + x[..., 3] / 2
+    return y
+
+def get_ious(bboxes1, bboxes2, box_format='xyxy', iou_type='iou'):
+    if bboxes1.shape[0] == 0 or bboxes2.shape[0] == 0:
+        return torch.zeros(bboxes1.shape[0], bboxes2.shape[0], device=bboxes1.device)
+        
+    if box_format == 'xywh':
+        bboxes1 = xywh2xyxy(bboxes1)
+        bboxes2 = xywh2xyxy(bboxes2)
+
+    b1_x1, b1_y1, b1_x2, b1_y2 = bboxes1.split(1, -1)
+    b2_x1, b2_y1, b2_x2, b2_y2 = bboxes2.split(1, -1)
+    
+    inter_x1 = torch.max(b1_x1, b2_x1.transpose(0, 1))
+    inter_y1 = torch.max(b1_y1, b2_y1.transpose(0, 1))
+    inter_x2 = torch.min(b1_x2, b2_x2.transpose(0, 1))
+    inter_y2 = torch.min(b1_y2, b2_y2.transpose(0, 1))
+
+    inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * torch.clamp(inter_y2 - inter_y1, min=0)
+    
+    area1 = (b1_x2 - b1_x1) * (b1_y2 - b1_y1)
+    area2 = (b2_x2 - b2_x1) * (b2_y2 - b2_y1)
+    union_area = area1 + area2.transpose(0, 1) - inter_area
+    
+    return inter_area / (union_area + 1e-6)

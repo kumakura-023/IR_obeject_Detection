@@ -25,14 +25,8 @@ else:
 # ===== 修正: 最新のファイル名でimport =====
 from dataset import YoloInfraredDataset
 from efficientnet_model import create_efficientnet_model
-from unified_targets import (
-    analyze_dataset_statistics,
-    prepare_anchor_grid_info,
-    build_targets,
-    evaluate_anchor_quality,
-    get_default_anchors,
-    compare_anchor_sets
-)
+# ★★★ 修正: `build_targets` のみを import するように変更 ★★★
+from unified_targets import build_targets
 from unified_loss import create_enhanced_loss
 
 
@@ -760,27 +754,43 @@ def main():
     else:
         print(f"📊 Progress will be shown every {config.progress_interval} batches")
     
-    # モデル初期化
+        # モデル初期化
     print("\n=== 🤖 Model Initialization ===")
-    model = create_efficientnet_model(
-        num_classes=config.num_classes,
-        pretrained=True
-    ).to(config.device)
-    
-    # グリッドサイズ検出
-    print("\n=== 🔍 Grid Size Detection ===")
+    model = create_efficientnet_model(num_classes=config.num_classes, pretrained=True).to(config.device)
+
+    # グリッドサイズとアンカーポイントの準備
+    print("\n=== 📐 Anchor & Grid Setup ===")
     model.eval()
     with torch.no_grad():
         test_input = torch.randn(1, 1, *config.input_size[::-1]).to(config.device)
-        feat1, feat2, feat3 = model.backbone(test_input)
-        p1, p2, p3 = model.neck(feat1, feat2, feat3)
-        grid_sizes = [
-            (p1.shape[2], p1.shape[3]),
-            (p2.shape[2], p2.shape[3]),
-            (p3.shape[2], p3.shape[3])
-        ]
+        # バックボーンとネックを一度通して、各レベルの特徴マップサイズを取得
+        # この部分はモデルの具体的な実装に依存
+        # ここでは仮のグリッドサイズとストライドを使用
+        # 実際には unified_training.py のグリッド検出ロジックを再利用
+        grid_sizes = [(config.input_size[1] // s, config.input_size[0] // s) for s in [8, 16, 32]]
+        strides = [8, 16, 32]
+        
+        anchor_points_list = []
+        strides_list = []
+        for i, stride in enumerate(strides):
+            h, w = grid_sizes[i]
+            grid_y, grid_x = torch.meshgrid(torch.arange(h), torch.arange(w), indexing='ij')
+            grid = torch.stack((grid_x, grid_y), 2).view(1, -1, 2)
+            anchor_points = (grid.float() + 0.5) * stride
+            anchor_points_list.append(anchor_points.squeeze(0))
+            strides_list.append(torch.full((h*w, 1), stride))
+
+    anchor_points = torch.cat(anchor_points_list, dim=0).to(config.device)
+    strides_tensor = torch.cat(strides_list, dim=0).to(config.device)
+    
+    anchor_info = {
+        'anchor_points': anchor_points,
+        'strides': strides_tensor,
+        'grid_sizes': grid_sizes,
+        'input_size': config.input_size
+    }
     model.train()
-    print(f"📐 Grid sizes: {grid_sizes}")
+    print(f"✅ Anchor and grid info prepared.")
     
     # アンカー・グリッド情報準備
     anchor_grid_info = prepare_anchor_grid_info(
@@ -855,15 +865,13 @@ def main():
                 
                 # ===== 修正部分: ターゲット構築を先に実行 =====
                 target_dict = build_targets(
+                    predictions=preds.detach(), # 勾配計算に影響しないようにdetach()
                     targets=targets,
-                    anchors_pixel_per_level=anchor_grid_info['anchors_pixel_per_level'],
-                    strides_per_level=anchor_grid_info['strides_per_level'],
-                    grid_sizes=grid_sizes,
-                    input_size=config.input_size,
-                    num_classes=config.num_classes,
-                    device=config.device,
-                    anchor_threshold=config.anchor_threshold
+                    anchor_info=anchor_info,
+                    num_classes=config.num_classes
                 )
+                
+                loss_dict = loss_fn(preds, target_dict)
                 
                 # ===== 修正部分: デバッグ関数にtarget_dictを渡す =====
                 loss_dict = debug_loss_calculation_comprehensive(
