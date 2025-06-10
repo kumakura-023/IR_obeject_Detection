@@ -6,7 +6,7 @@ import torch.nn as nn
 from version_tracker import create_version_tracker, VersionTracker
 
 # バージョン管理システム初期化
-model_version = create_version_tracker("Model System v1.0", "model.py")
+model_version = create_version_tracker("Model System v1.2", "model.py")
 model_version.add_modification("SimpleYOLO実装")
 model_version.add_modification("検出ヘッド最適化")
 model_version.add_modification("モデル改良 (Backboneを深く、検出ヘッド強化, 重み初期化) (Phase 2)") # 追加
