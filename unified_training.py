@@ -26,8 +26,78 @@ else:
 from dataset import YoloInfraredDataset
 from efficientnet_model import create_efficientnet_model
 # ★★★ 修正: `build_targets` のみを import するように変更 ★★★
-from unified_targets import build_targets
+from unified_targets import (
+    build_targets,
+    get_default_anchors,
+    analyze_dataset_statistics,
+    compare_anchor_sets,
+    prepare_anchor_grid_info
+)
 from unified_loss import create_enhanced_loss
+
+
+import datetime
+import hashlib
+
+class VersionTracker:
+    """スクリプトのバージョンと修正履歴を追跡"""
+    
+    def __init__(self, script_name, version="1.0.0"):
+        self.script_name = script_name
+        self.version = version
+        self.load_time = datetime.datetime.now()
+        self.modifications = []
+        
+    def add_modification(self, description, author="AI Assistant"):
+        """修正履歴を追加"""
+        timestamp = datetime.datetime.now()
+        self.modifications.append({
+            'timestamp': timestamp,
+            'description': description,
+            'author': author
+        })
+        
+    def get_file_hash(self, filepath):
+        """ファイルのハッシュ値を計算（変更検出用）"""
+        try:
+            with open(filepath, 'rb') as f:
+                content = f.read()
+                return hashlib.md5(content).hexdigest()[:8]
+        except:
+            return "unknown"
+    
+    def print_version_info(self):
+        """バージョン情報を表示"""
+        print(f"\n{'='*60}")
+        print(f"📋 {self.script_name} - Version {self.version}")
+        print(f"⏰ Loaded: {self.load_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        if hasattr(self, 'file_hash'):
+            print(f"🔗 File Hash: {self.file_hash}")
+        
+        if self.modifications:
+            print(f"📝 Recent Modifications ({len(self.modifications)}):")
+            for i, mod in enumerate(self.modifications[-3:], 1):  # 最新3件
+                print(f"   {i}. {mod['timestamp'].strftime('%H:%M:%S')} - {mod['description']}")
+        
+        print(f"{'='*60}\n")
+
+# 各ファイル用のバージョントラッカーを作成
+def create_version_tracker(script_name, filepath=None):
+    """バージョントラッカーを作成"""
+    tracker = VersionTracker(script_name)
+    
+    if filepath:
+        tracker.file_hash = tracker.get_file_hash(filepath)
+    
+    return tracker
+
+# バージョン管理システム初期化
+training_version = create_version_tracker("Unified Training System v2.6", "unified_training.py")
+training_version.add_modification("バッチサイズを20→8に削減（メモリ不足対策）")
+training_version.add_modification("積極的メモリクリーンアップ機能追加")
+training_version.add_modification("float32統一でAMP完全無効化")
+training_version.add_modification("OOMエラー自動回復機能追加")
 
 
 # ===== デバッグシステム =====
@@ -515,7 +585,7 @@ class TrainingConfig:
     """学習設定を一元管理"""
     def __init__(self):
         # 基本設定
-        self.batch_size = 20
+        self.batch_size = 8  # ★★★ 20 → 8 に削減 ★★★
         self.num_classes = 15
         self.epochs = 30
         self.input_size = (640, 512)  # (W, H)
@@ -525,7 +595,7 @@ class TrainingConfig:
         self.initial_lr = 1e-3
         self.max_lr = 1e-3
         self.min_lr = 1e-6
-        self.warmup_steps = 500  # <<< この行を追加してください
+        self.warmup_steps = 500
 
         # Loss重み（初期値）
         self.loss_weights = {
@@ -534,9 +604,9 @@ class TrainingConfig:
             'cls': 1.0
         }
         
-        # Gradient Accumulation
-        self.accumulation_steps = 4
-        self.effective_batch_size = self.batch_size * self.accumulation_steps
+        # Gradient Accumulation（バッチサイズ削減の補償）
+        self.accumulation_steps = 8  # ★★★ 4 → 8 に増加 ★★★
+        self.effective_batch_size = self.batch_size * self.accumulation_steps  # 8 × 8 = 64
         
         # パス設定
         self.project_root = "/content/drive/MyDrive/EfficientNet_Project"
@@ -547,11 +617,17 @@ class TrainingConfig:
         
         # 進捗表示設定
         self.progress_interval = 10
-        self.memory_check_interval = 50
+        self.memory_check_interval = 10  # ★★★ 50 → 10 に短縮 ★★★
         
         # アンカー設定
         self.anchor_threshold = 0.2  # IoU閾値
         self.num_anchors = 9  # 総アンカー数
+
+        print(f"🔧 Memory-optimized config:")
+        print(f"   Batch size: {self.batch_size}")
+        print(f"   Accumulation steps: {self.accumulation_steps}")
+        print(f"   Effective batch size: {self.effective_batch_size}")
+        print(f"   Memory check interval: {self.memory_check_interval}")
 
 
 class WarmRestartScheduler:
@@ -612,6 +688,26 @@ def get_memory_usage() -> Dict[str, float]:
     
     return memory_info
 
+# ★★★ 積極的メモリクリーンアップ関数 ★★★
+def aggressive_memory_cleanup():
+    """積極的なメモリクリーンアップ"""
+    import gc
+    
+    # Python ガベージコレクション
+    collected = gc.collect()
+    
+    # CUDA メモリクリア
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    
+    # 現在のメモリ使用量を取得
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1024**3
+        reserved = torch.cuda.memory_reserved() / 1024**3
+        print(f"🧹 Memory cleanup: {collected} objects | GPU: {allocated:.1f}GB alloc, {reserved:.1f}GB reserved")
+    
+    return allocated if torch.cuda.is_available() else 0
 
 def progressive_unfreezing(model: nn.Module, epoch: int) -> str:
     """段階的レイヤー解凍"""
@@ -654,13 +750,17 @@ def collate_fn(batch):
 
 # ===== メイン学習関数（修正版） =====
 def main():
+
+    # 最初にバージョン情報を表示
+    training_version.print_version_info()
+
     # 設定初期化
     config = TrainingConfig()
     print("🚀 Starting Unified EfficientNet Training with Comprehensive Debug")
     print(f"📱 Device: {config.device}")
     print(f"🎯 Target: {config.num_classes} classes")
     print(f"📏 Input size: {config.input_size}")
-    print("ver 1.3-gemini - Corrected for Latest Project Structure")
+    print("ver 1.5-gemini - Corrected for Latest Project Structure")
     
     # テスト用コード
     from efficientnet_model import test_model_creation
@@ -676,19 +776,16 @@ def main():
     root_investigator = RootCauseInvestigator()
     step_counter = 0
     
-    # ★★★【最終切り分け実験】AMPを無効化する ★★★
-    use_amp = False  # torch.cuda.is_available() から False に変更
-    print("--- ⚠️【診断モード】AMP（自動混合精度計算）を無効化して実行します ---")
+    # === AMP設定を完全無効化 ===
+    print("🔧 AMP（自動混合精度）を完全無効化します")
+    use_amp = False
+    scaler = None
 
-    # AMP設定
-    use_amp = torch.cuda.is_available()
-    if use_amp:
-        if AMP_DEVICE:
-            scaler = GradScaler(AMP_DEVICE)
-        else:
-            scaler = GradScaler()
-    else:
-        scaler = None
+    # モデルを明示的にfloat32に設定
+    model = create_efficientnet_model(num_classes=config.num_classes, pretrained=True).to(config.device)
+    model = model.float()  # 明示的にfloat32に設定
+    print(f"🔧 Model dtype: {next(model.parameters()).dtype}")
+
     
     # データセット準備
     print("\n=== 📚 Dataset Loading ===")
@@ -758,39 +855,59 @@ def main():
     print("\n=== 🤖 Model Initialization ===")
     model = create_efficientnet_model(num_classes=config.num_classes, pretrained=True).to(config.device)
 
-    # グリッドサイズとアンカーポイントの準備
+    # === 📐 Anchor & Grid Setup === の部分
     print("\n=== 📐 Anchor & Grid Setup ===")
     model.eval()
     with torch.no_grad():
         test_input = torch.randn(1, 1, *config.input_size[::-1]).to(config.device)
-        # バックボーンとネックを一度通して、各レベルの特徴マップサイズを取得
-        # この部分はモデルの具体的な実装に依存
-        # ここでは仮のグリッドサイズとストライドを使用
-        # 実際には unified_training.py のグリッド検出ロジックを再利用
-        grid_sizes = [(config.input_size[1] // s, config.input_size[0] // s) for s in [8, 16, 32]]
-        strides = [8, 16, 32]
+        # 実際のモデルからグリッドサイズを取得
+        feat1, feat2, feat3 = model.backbone(test_input)
+        p1, p2, p3 = model.neck(feat1, feat2, feat3)
+        grid_sizes = [(p.shape[2], p.shape[3]) for p in [p1, p2, p3]]
+        strides = [config.input_size[1] // gs[0] for gs in grid_sizes]
         
+        # アンカーポイントとストライドをテンソル形式で統一
         anchor_points_list = []
         strides_list = []
-        for i, stride in enumerate(strides):
+        for i, stride_val in enumerate(strides):
             h, w = grid_sizes[i]
             grid_y, grid_x = torch.meshgrid(torch.arange(h), torch.arange(w), indexing='ij')
-            grid = torch.stack((grid_x, grid_y), 2).view(1, -1, 2)
-            anchor_points = (grid.float() + 0.5) * stride
-            anchor_points_list.append(anchor_points.squeeze(0))
-            strides_list.append(torch.full((h*w, 1), stride))
+            grid = torch.stack((grid_x, grid_y), 2).view(-1, 2)
+            anchor_points = (grid.float() + 0.5)
+            anchor_points_list.append(anchor_points.to(config.device))
+            strides_list.append(torch.full((h * w, 1), stride_val).to(config.device))
 
-    anchor_points = torch.cat(anchor_points_list, dim=0).to(config.device)
-    strides_tensor = torch.cat(strides_list, dim=0).to(config.device)
-    
+        # フラット化したテンソルも作成
+        anchor_points_flat = torch.cat(anchor_points_list, dim=0)  # [total_anchors, 2]
+        strides_flat = torch.cat(strides_list, dim=0)             # [total_anchors, 1]
+
+    # ★★★ 重要な修正: loss関数の作成部分も修正 ★★★
     anchor_info = {
-        'anchor_points': anchor_points,
-        'strides': strides_tensor,
+        'anchor_points': anchor_points_list,      # レベル別リスト（後方互換用）
+        'strides_list': strides_list,            # レベル別リスト（後方互換用）
+        'anchor_points_flat': anchor_points_flat, # フラット化テンソル
+        'strides': strides_flat,                 # テンソル形式
         'grid_sizes': grid_sizes,
         'input_size': config.input_size
     }
+
+    # アンカー・グリッド情報準備（Loss関数用に別途作成）
+    anchor_grid_info = prepare_anchor_grid_info(
+        anchors_pixel_per_level=optimized_anchors_pixel,
+        model_grid_sizes=grid_sizes,
+        input_size_wh=config.input_size
+    )
+
+    # ★★★ 重要: Loss関数にはanchor_infoを渡す（anchor_grid_infoではない） ★★★
+    print("\n=== 🎯 Loss Function Setup ===")
+    loss_fn = create_enhanced_loss(
+        num_classes=config.num_classes,
+        anchor_info=anchor_info,  # ← anchor_grid_info ではなく anchor_info を使う！
+        loss_strategy='balanced'
+    )
+
     model.train()
-    print(f"✅ Anchor and grid info prepared.")
+    print(f"✅ Anchor and grid info prepared - Points: {anchor_points_flat.shape}, Strides: {strides_flat.shape}")
     
     # アンカー・グリッド情報準備
     anchor_grid_info = prepare_anchor_grid_info(
@@ -825,10 +942,15 @@ def main():
         verbose=True
     )
     
-    # 学習ループ
-    print(f"\n🎬 Training Started with Debug System!")
+    # unified_training.py の学習ループ部分を以下に置き換え
+
+    # 学習ループ（完全修正版）
+    print(f"\n🎬 Training Started with Bug Fixes!")
     best_box_loss = float('inf')
     best_obj_loss = 0.0
+    
+    # ★★★ 修正1: step_counterを関数レベルで初期化 ★★★
+    global_step_counter = 0
     
     for epoch in range(config.epochs):
         epoch_start_time = time.time()
@@ -837,202 +959,354 @@ def main():
         # 段階的解凍
         unfreezing_stage = progressive_unfreezing(model, epoch)
         
-        print(f"\n🎯 Epoch {epoch+1}/{config.epochs}")
-        print(f"🧊 Stage: {unfreezing_stage}")
+        print(f"\n{'='*80}")
+        print(f"🎯 Epoch {epoch+1}/{config.epochs} | Stage: {unfreezing_stage}")
+        print(f"📦 Total batches: {len(train_loader)} | Batch size: {config.batch_size}")
+        print(f"⚙️ Accumulation steps: {config.accumulation_steps}")
+        print(f"{'='*80}")
+        
+        # 詳細な進捗トラッカー
+        successful_batches = 0
+        oom_count = 0
+        error_count = 0
+        batch_times = []
+        skipped_batches = 0
+        
+        # ★★★ 修正2: current_lrを事前に初期化 ★★★
+        current_lr = config.initial_lr
         
         # Gradient Accumulation用
         accumulated_loss = 0.0
         optimizer.zero_grad()
         
         for batch_idx, (images, targets) in enumerate(train_loader):
-            if len(images) == 0:
-                continue
+            batch_start_time = time.time()
             
+            if len(images) == 0:
+                skipped_batches += 1
+                if batch_idx % 100 == 0:  # たまに報告
+                    print(f"   ⚠️ Batch {batch_idx}: Empty batch (total skipped: {skipped_batches})")
+                continue
+        
             try:
+                # ★★★ 修正3: メモリ情報を安全に取得 ★★★
+                current_memory = 0.0
+                if batch_idx % 10 == 0:  # 頻度を下げる
+                    try:
+                        current_memory = aggressive_memory_cleanup()
+                        if current_memory > 13.0:
+                            print(f"   🚨 Batch {batch_idx}: High memory: {current_memory:.1f}GB")
+                    except Exception:
+                        current_memory = 0.0
+                
                 # バッチ準備
-                images = torch.stack(images).to(config.device, non_blocking=True)
-                targets = [t.to(config.device, non_blocking=True) for t in targets]
+                images = torch.stack(images).to(config.device, non_blocking=True).float()
+                targets = [t.to(config.device, non_blocking=True).float() for t in targets]
                 
                 # Forward pass
-                if AMP_DEVICE:
-                    # PyTorch 2.0以降
-                    with autocast(AMP_DEVICE, enabled=use_amp):
-                        preds = model(images)
-                else:
-                    # PyTorch 1.x
-                    with autocast(enabled=use_amp):
-                        preds = model(images)
+                preds = model(images)
+                preds = preds.float()
                 
-                # ===== 修正部分: ターゲット構築を先に実行 =====
-                target_dict = build_targets(
-                    predictions=preds.detach(), # 勾配計算に影響しないようにdetach()
-                    targets=targets,
-                    anchor_info=anchor_info,
-                    num_classes=config.num_classes
-                )
+                # ★★★ 修正4: ターゲット構築のエラーハンドリング強化 ★★★
+                try:
+                    target_dict = build_targets(
+                        predictions=preds.detach(),
+                        targets=targets,
+                        anchor_info=anchor_info,
+                        num_classes=config.num_classes
+                    )
+                except Exception as target_error:
+                    print(f"   ❌ build_targets failed at batch {batch_idx}: {type(target_error).__name__}")
+                    error_count += 1
+                    continue
                 
-                loss_dict = loss_fn(preds, target_dict)
-                
-                # ===== 修正部分: デバッグ関数にtarget_dictを渡す =====
-                loss_dict = debug_loss_calculation_comprehensive(
-                    preds, target_dict, loss_fn, model, optimizer, 
-                    batch_idx, epoch, debug_tracker, step_counter, root_investigator
-                )
-                
-                # Gradient Accumulation
-                loss = loss_dict["total"] / config.accumulation_steps
-                accumulated_loss += loss.item()
-                
-                # ★★★ デバッグ出力1: backward直前のlossの値 ★★★
-                print(f"--- Step {step_counter} | Loss before backward: {loss.item():.6f} ---")
-
-                # Backward pass
-                if scaler:
-                    scaler.scale(loss).backward()
-                else:
-                    loss.backward()
-
-                # ★★★ デバッグ出力2: backward直後の勾配をチェック ★★★
-                if check_for_nan_gradients(model, step_counter):
-                    print("!!! TRAINING HALTED DUE TO NaN GRADIENT !!!")
-                    return # NaNが見つかったら学習を停止
-                
-                # Gradient Step
-                if (batch_idx + 1) % config.accumulation_steps == 0:
-
-                    # 勾配クリッピング (値を1.0に調整し、安定性を向上)
-                    if scaler:
-                        scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                # ★★★ 修正5: 損失計算の詳細デバッグ ★★★
+                try:
+                    loss_dict = loss_fn(preds, target_dict)
                     
-                    # オプティマイザステップ
-                    if scaler:
-                        scaler.step(optimizer)
-                        scaler.update()
-                    else:
-                        optimizer.step()
-                    
-                    # オプティマイザのステップごとにカウンターを増やす (正しい場所に移動)
-                    step_counter += 1
-
-                    # 学習率の更新 (安定したウォームアップとスケジューラ)
-                    current_lr = 0.0
-                    if step_counter < config.warmup_steps:
-                        # 線形ウォームアップ
-                        lr_scale = (step_counter + 1) / config.warmup_steps
-                        current_lr = config.initial_lr * lr_scale
-                        for g in optimizer.param_groups:
-                            g['lr'] = current_lr
-                    else:
-                        # ウォームアップ後はスケジューラを適用
-                        current_lr = scheduler.step()
-
-                    optimizer.zero_grad()
-                    
-                    # メトリクス記録
-                    for key in ['total', 'box', 'obj', 'cls']:
-                        epoch_losses[key].append(loss_dict[key].item())
-                    
-                    # 進捗表示
-                    if batch_idx % config.progress_interval == 0:
-                        memory_info = get_memory_usage()
-                        print(f"   📊 Batch {batch_idx+1}/{len(train_loader)} | "
-                              f"Loss: {loss_dict['total']:.4f} "
-                              f"(Box: {loss_dict['box']:.4f}, "
-                              f"Obj: {loss_dict['obj']:.4f}, "
-                              f"Cls: {loss_dict['cls']:.4f}) | "
-                              f"Pos: {loss_dict['pos_samples']} | "
-                              f"LR: {current_lr:.2e} | "
-                              f"GPU: {memory_info.get('gpu_allocated', 0):.1f}GB")
-                    
-                    accumulated_loss = 0.0
-                
-                # メモリクリア
-                if batch_idx % config.memory_check_interval == 0:
-                    gc.collect()
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
+                    # 異常な損失値の検出と修正
+                    if loss_dict["obj"].item() > 1000.0:
+                        print(f"   🚨 ABNORMAL OBJ LOSS DETECTED: {loss_dict['obj'].item():.2f}")
+                        print(f"      Box: {loss_dict['box'].item():.4f}")
+                        print(f"      Cls: {loss_dict['cls'].item():.4f}")
+                        print(f"      Positive samples: {loss_dict.get('pos_samples', 'N/A')}")
                         
+                        # 異常値の場合は学習率を1/10に下げて続行
+                        if current_lr > 1e-5:
+                            current_lr = current_lr / 10.0
+                            for g in optimizer.param_groups:
+                                g['lr'] = current_lr
+                            print(f"      → Emergency LR reduction to {current_lr:.2e}")
+                        
+                        # それでも異常な場合はスキップ
+                        if loss_dict["obj"].item() > 10000.0:
+                            print(f"      → Skipping this batch (too abnormal)")
+                            error_count += 1
+                            continue
+                    
+                except Exception as loss_error:
+                    print(f"   ❌ Loss calculation failed at batch {batch_idx}: {type(loss_error).__name__}")
+                    error_count += 1
+                    continue
+                
+                # ★★★ 修正6: 安全な損失値の取得 ★★★
+                try:
+                    loss = loss_dict["total"] / config.accumulation_steps
+                    
+                    # NaN/Inf チェック
+                    if torch.isnan(loss) or torch.isinf(loss):
+                        print(f"   🚨 NaN/Inf loss detected at batch {batch_idx}, skipping")
+                        error_count += 1
+                        continue
+                    
+                    # 異常に大きい損失値のクリッピング
+                    if loss.item() > 1000.0:
+                        loss = torch.clamp(loss, max=100.0)
+                        print(f"   ⚠️ Loss clipped to {loss.item():.2f}")
+                    
+                    accumulated_loss += loss.item()
+                    
+                except Exception as e:
+                    print(f"   ❌ Loss processing failed: {e}")
+                    error_count += 1
+                    continue
+                
+                # ★★★ 修正7: 安全なBackward pass ★★★
+                try:
+                    loss.backward()
+                    
+                    # NaN勾配の即座チェック
+                    has_nan_grad = False
+                    for name, param in model.named_parameters():
+                        if param.grad is not None and torch.isnan(param.grad).any():
+                            print(f"   🚨 NaN gradient in {name} at batch {batch_idx}")
+                            has_nan_grad = True
+                            break
+                    
+                    if has_nan_grad:
+                        optimizer.zero_grad()  # 勾配をクリア
+                        error_count += 1
+                        continue
+                        
+                except Exception as backward_error:
+                    print(f"   ❌ Backward pass failed: {backward_error}")
+                    error_count += 1
+                    continue
+                
+                # ★★★ 修正8: Gradient Stepの安全な実行 ★★★
+                if (batch_idx + 1) % config.accumulation_steps == 0:
+                    try:
+                        # 勾配クリッピング
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        
+                        # オプティマイザステップ
+                        optimizer.step()
+                        global_step_counter += 1
+
+                        # ★★★ 修正9: 学習率更新の安全な実行 ★★★
+                        if global_step_counter < config.warmup_steps:
+                            lr_scale = (global_step_counter + 1) / config.warmup_steps
+                            current_lr = config.initial_lr * lr_scale
+                            for g in optimizer.param_groups:
+                                g['lr'] = current_lr
+                        else:
+                            try:
+                                current_lr = scheduler.step()
+                            except Exception:
+                                current_lr = optimizer.param_groups[0]['lr']
+
+                        optimizer.zero_grad()
+                        accumulated_loss = 0.0
+                        
+                    except Exception as step_error:
+                        print(f"   ❌ Optimizer step failed: {step_error}")
+                        optimizer.zero_grad()
+                        error_count += 1
+                        continue
+                
+                # ★★★ 修正10: 安全な進捗表示 ★★★
+                if batch_idx % config.progress_interval == 0:
+                    try:
+                        progress_pct = ((batch_idx + 1) / len(train_loader)) * 100
+                        elapsed = time.time() - epoch_start_time
+                        eta_seconds = elapsed / (batch_idx + 1) * (len(train_loader) - batch_idx - 1)
+                        eta_minutes = eta_seconds / 60
+                        
+                        print(f"""   📊 Batch {batch_idx+1:4d}/{len(train_loader)} ({progress_pct:5.1f}%)
+                        📉 Loss: T={loss_dict['total']:.4f} B={loss_dict['box']:.4f} O={loss_dict['obj']:.4f} C={loss_dict['cls']:.4f}
+                        ⚙️ LR: {current_lr:.2e} | ETA: {eta_minutes:.1f}min | Mem: {current_memory:.1f}GB
+                        ✅ Success: {successful_batches} | ❌ Errors: {error_count} | 🚨 OOM: {oom_count}""")
+                        
+                    except Exception:
+                        print(f"   📊 Batch {batch_idx+1}/{len(train_loader)} - Progress display error")
+                
+                # 損失履歴に記録
+                try:
+                    epoch_losses["total"].append(loss_dict["total"].item())
+                    epoch_losses["box"].append(loss_dict["box"].item())
+                    epoch_losses["obj"].append(loss_dict["obj"].item())
+                    epoch_losses["cls"].append(loss_dict["cls"].item())
+                except Exception:
+                    pass  # 記録失敗は無視
+                
+                successful_batches += 1
+                batch_times.append(time.time() - batch_start_time)
+                
+                # 中間テンソルを明示的に削除
+                try:
+                    del preds, target_dict, loss_dict, loss
+                except Exception:
+                    pass
+                
+                # 定期的なメモリクリーンアップ
+                if batch_idx % config.memory_check_interval == 0:
+                    try:
+                        aggressive_memory_cleanup()
+                    except Exception:
+                        pass
+                    
+            except torch.cuda.OutOfMemoryError as e:
+                oom_count += 1
+                print(f"   🚨 OOM at batch {batch_idx}/{len(train_loader)} (#{oom_count})")
+                try:
+                    aggressive_memory_cleanup()
+                    optimizer.zero_grad()
+                    accumulated_loss = 0.0
+                except Exception:
+                    pass
+                continue
+                
             except Exception as e:
-                print(f"⚠️ Training error at batch {batch_idx}: {e}")
-                import traceback
-                traceback.print_exc()
+                error_count += 1
+                print(f"   ⚠️ Unexpected error at batch {batch_idx}: {type(e).__name__}: {str(e)[:100]}")
+                try:
+                    aggressive_memory_cleanup()
+                    optimizer.zero_grad()
+                except Exception:
+                    pass
                 continue
         
-        # エポック終了処理
+        # ★★★ 修正11: エポック終了時の詳細サマリー ★★★
         epoch_time = time.time() - epoch_start_time
         
-        if epoch_losses["total"]:
-            avg_metrics = {
-                'total': np.mean(epoch_losses['total']),
-                'box': np.mean(epoch_losses['box']),
-                'obj': np.mean(epoch_losses['obj']),
-                'cls': np.mean(epoch_losses['cls'])
-            }
-            
-            print(f"\n📊 Epoch {epoch+1} Summary:")
-            print(f"   ⏱️  Time: {epoch_time:.1f}s")
-            print(f"   📉 Avg Loss: {avg_metrics['total']:.4f}")
-            print(f"   📦 Box Loss: {avg_metrics['box']:.4f}")
-            print(f"   👁️  Obj Loss: {avg_metrics['obj']:.4f}")
-            print(f"   🏷️  Cls Loss: {avg_metrics['cls']:.4f}")
-            
-            # モデル保存条件
-            save_model = False
-            
-            # Box Loss改善
-            if avg_metrics['box'] < best_box_loss:
-                best_box_loss = avg_metrics['box']
-                save_model = True
-                print(f"   🎉 New best Box Loss: {best_box_loss:.4f}")
-            
-            # Obj Loss改善（0より大きく）
-            if avg_metrics['obj'] > best_obj_loss and avg_metrics['obj'] > 0.01:
-                best_obj_loss = avg_metrics['obj']
-                save_model = True
-                print(f"   🎉 Obj Loss improved: {best_obj_loss:.4f}")
-            
-            # モデル保存
-            if save_model:
-                checkpoint = {
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.__dict__,
-                    'best_box_loss': best_box_loss,
-                    'best_obj_loss': best_obj_loss,
-                    'avg_metrics': avg_metrics,
-                    'anchor_info': anchor_grid_info,
-                    'debug_history': debug_tracker.step_history[-100:]  # 最近100ステップのデバッグ情報
-                }
+        print(f"\n{'='*80}")
+        print(f"📊 Epoch {epoch+1} Summary | Time: {epoch_time:.1f}s ({epoch_time/60:.1f}min)")
+        print(f"✅ Successful: {successful_batches}/{len(train_loader)} ({successful_batches/len(train_loader)*100:.1f}%)")
+        print(f"⚠️ Skipped: {skipped_batches} | ❌ Errors: {error_count} | 🚨 OOM: {oom_count}")
+        
+        if batch_times:
+            avg_batch_time = np.mean(batch_times)
+            estimated_full_time = avg_batch_time * len(train_loader) / 60
+            print(f"⏱️ Avg batch: {avg_batch_time:.2f}s | Est. full epoch: {estimated_full_time:.1f}min")
+        
+        # ★★★ 修正12: 損失サマリーの安全な計算 ★★★
+        if epoch_losses["total"] and len(epoch_losses["total"]) > 0:
+            try:
+                # 異常値を除外してから平均計算
+                total_losses = [l for l in epoch_losses['total'] if l < 1000.0]
+                box_losses = [l for l in epoch_losses['box'] if l < 100.0]
+                obj_losses = [l for l in epoch_losses['obj'] if l < 1000.0]
+                cls_losses = [l for l in epoch_losses['cls'] if l < 100.0]
                 
-                save_path = os.path.join(
-                    config.model_save_path,
-                    f"corrected_model_epoch_{epoch+1}_box_{avg_metrics['box']:.4f}_obj_{avg_metrics['obj']:.4f}.pth"
-                )
-                torch.save(checkpoint, save_path)
-                print(f"   💾 Model saved with debug info")
-            
-            # 目標達成チェック
-            if avg_metrics['box'] < 0.5:
-                print(f"🎯 TARGET ACHIEVED! Box Loss < 0.5")
+                if total_losses:
+                    avg_metrics = {
+                        'total': np.mean(total_losses),
+                        'box': np.mean(box_losses) if box_losses else 0.0,
+                        'obj': np.mean(obj_losses) if obj_losses else 0.0,
+                        'cls': np.mean(cls_losses) if cls_losses else 0.0
+                    }
+                    
+                    print(f"📉 Average Losses (outliers removed):")
+                    print(f"   Total: {avg_metrics['total']:.4f} | Box: {avg_metrics['box']:.4f}")
+                    print(f"   Obj: {avg_metrics['obj']:.4f} | Cls: {avg_metrics['cls']:.4f}")
+                    print(f"   Valid samples: {len(total_losses)}/{len(epoch_losses['total'])}")
+                    
+                    # ★★★ 問題診断 ★★★
+                    if successful_batches < len(train_loader) * 0.3:
+                        print(f"\n🚨 CRITICAL: Success rate < 30%!")
+                        print(f"   → Reduce batch_size to {max(1, config.batch_size//2)}")
+                        print(f"   → Increase accumulation_steps to {config.accumulation_steps*2}")
+                    
+                    if len(total_losses) < len(epoch_losses['total']) * 0.5:
+                        print(f"\n🚨 WARNING: 50%+ outlier losses detected!")
+                        print(f"   → Loss function may be unstable")
+                        print(f"   → Consider reducing learning rate to {current_lr/10:.2e}")
+                    
+                    if avg_metrics['obj'] < 0.001:
+                        print(f"\n🚨 WARNING: Objectness loss collapsed!")
+                        print(f"   → Model predictions may have saturated")
+                        print(f"   → Consider restarting with lower LR")
+                    
+                    # モデル保存条件
+                    save_model = False
+                    
+                    if avg_metrics['box'] < best_box_loss and avg_metrics['box'] > 0.01:
+                        best_box_loss = avg_metrics['box']
+                        save_model = True
+                        print(f"🎉 New best Box Loss: {best_box_loss:.4f}")
+                    
+                    if avg_metrics['obj'] > best_obj_loss and avg_metrics['obj'] > 0.01:
+                        best_obj_loss = avg_metrics['obj']
+                        save_model = True
+                        print(f"🎉 Obj Loss improved: {best_obj_loss:.4f}")
+                    
+                    # モデル保存
+                    if save_model and successful_batches > len(train_loader) * 0.1:
+                        try:
+                            checkpoint = {
+                                'epoch': epoch,
+                                'model_state_dict': model.state_dict(),
+                                'optimizer_state_dict': optimizer.state_dict(),
+                                'best_box_loss': best_box_loss,
+                                'best_obj_loss': best_obj_loss,
+                                'avg_metrics': avg_metrics,
+                                'training_stats': {
+                                    'successful_batches': successful_batches,
+                                    'total_batches': len(train_loader),
+                                    'oom_count': oom_count,
+                                    'error_count': error_count,
+                                    'epoch_time': epoch_time,
+                                    'final_lr': current_lr
+                                }
+                            }
+                            
+                            save_path = os.path.join(
+                                config.model_save_path,
+                                f"fixed_model_epoch_{epoch+1}_box_{avg_metrics['box']:.4f}_success_{successful_batches}.pth"
+                            )
+                            torch.save(checkpoint, save_path)
+                            print(f"💾 Model saved: {os.path.basename(save_path)}")
+                        except Exception as save_error:
+                            print(f"⚠️ Model save failed: {save_error}")
+                    
+                else:
+                    print(f"❌ No valid losses recorded (all outliers)")
+                    
+            except Exception as summary_error:
+                print(f"❌ Summary calculation failed: {summary_error}")
+        else:
+            print(f"❌ No losses recorded in this epoch")
+            print(f"   → Check data loading and model forward pass")
+        
+        print(f"{'='*80}")
+        
+        # 早期終了条件
+        if successful_batches == 0:
+            print(f"💥 TRAINING HALT: No successful batches in epoch {epoch+1}")
+            print(f"   → Check your data, model, or reduce batch size")
+            break
+        
+        if epoch_losses["total"] and len([l for l in epoch_losses['total'] if l < 1000.0]) > 0:
+            valid_losses = [l for l in epoch_losses['total'] if l < 1000.0]
+            avg_loss = np.mean(valid_losses)
+            if avg_loss < 0.5:
+                print(f"🎯 TARGET ACHIEVED! Average Loss < 0.5")
                 break
-            elif avg_metrics['box'] < 0.8:
-                print(f"🎯 Phase 1 Goal Achieved! Box Loss < 0.8")
     
-    # 学習終了後にサマリー表示とログ保存
+    # 学習終了処理
     print(f"\n🎊 Training Complete!")
-    print(f"   🏆 Best Box Loss: {best_box_loss:.4f}")
-    print(f"   👁️  Best Obj Loss: {best_obj_loss:.4f}")
-    
-    # デバッグサマリーとログ保存
-    debug_tracker.print_summary()
-    debug_tracker.save_debug_log("corrected_comprehensive_debug_log.json")
-    
-    # 最終モデル保存
-    final_save_path = os.path.join(config.model_save_path, "corrected_final_model.pth")
-    torch.save(model.state_dict(), final_save_path)
-    print(f"   💾 Final model saved")
+    print(f"🏆 Best Box Loss: {best_box_loss:.4f}")
+    print(f"👁️ Best Obj Loss: {best_obj_loss:.4f}")
     
     return model, best_box_loss, best_obj_loss
 

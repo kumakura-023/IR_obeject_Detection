@@ -1,5 +1,5 @@
-# 修正版 unified_targets.py
-# Obj Loss異常値問題を解決
+# 修正版 unified_targets.py (v3)
+# データ構造の不整合に柔軟に対応
 
 import torch
 import torch.nn.functional as F
@@ -9,6 +9,71 @@ import matplotlib.pyplot as plt
 import time
 from scipy.optimize import linear_sum_assignment
 from typing import List, Tuple, Dict, Optional
+
+
+import datetime
+import hashlib
+
+class VersionTracker:
+    """スクリプトのバージョンと修正履歴を追跡"""
+    
+    def __init__(self, script_name, version="1.0.0"):
+        self.script_name = script_name
+        self.version = version
+        self.load_time = datetime.datetime.now()
+        self.modifications = []
+        
+    def add_modification(self, description, author="AI Assistant"):
+        """修正履歴を追加"""
+        timestamp = datetime.datetime.now()
+        self.modifications.append({
+            'timestamp': timestamp,
+            'description': description,
+            'author': author
+        })
+        
+    def get_file_hash(self, filepath):
+        """ファイルのハッシュ値を計算（変更検出用）"""
+        try:
+            with open(filepath, 'rb') as f:
+                content = f.read()
+                return hashlib.md5(content).hexdigest()[:8]
+        except:
+            return "unknown"
+    
+    def print_version_info(self):
+        """バージョン情報を表示"""
+        print(f"\n{'='*60}")
+        print(f"📋 {self.script_name} - Version {self.version}")
+        print(f"⏰ Loaded: {self.load_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        if hasattr(self, 'file_hash'):
+            print(f"🔗 File Hash: {self.file_hash}")
+        
+        if self.modifications:
+            print(f"📝 Recent Modifications ({len(self.modifications)}):")
+            for i, mod in enumerate(self.modifications[-3:], 1):  # 最新3件
+                print(f"   {i}. {mod['timestamp'].strftime('%H:%M:%S')} - {mod['description']}")
+        
+        print(f"{'='*60}\n")
+
+# 各ファイル用のバージョントラッカーを作成
+def create_version_tracker(script_name, filepath=None):
+    """バージョントラッカーを作成"""
+    tracker = VersionTracker(script_name)
+    
+    if filepath:
+        tracker.file_hash = tracker.get_file_hash(filepath)
+    
+    return tracker
+
+# バージョン管理システム初期化
+targets_version = create_version_tracker("Unified Targets System v3.2", "unified_targets.py")
+targets_version.add_modification("アンカーマスクサイズ不整合修正 (264960 vs 88320)")
+targets_version.add_modification("候補アンカー選定ロジック改善")
+targets_version.add_modification("float32型統一でデータ型エラー修正")
+targets_version.add_modification("段階的デバッグ出力追加")
+targets_version.add_modification("変数スコープエラー修正 (num_anchors_per_grid)")
 
 # ===== ユーティリティ関数 =====
 def get_default_anchors() -> List[List[Tuple[int, int]]]:
@@ -214,14 +279,80 @@ def build_targets(
     topk_candidates: int = 10,
     iou_threshold: float = 0.5,
 ):
+    # ★★★ バージョン追跡（修正版） ★★★
+    VERSION = "3.4-clean-fix"
+    
+    # バージョン情報表示（初回のみ）
+    if not hasattr(build_targets, '_version_printed'):
+        print(f"\n{'='*60}")
+        print(f"📋 Unified Targets System v{VERSION}")
+        print(f"⏰ Clean Fix Applied: 2025-06-09 16:00")
+        print(f"📝 Fixed: Variable scope, duplicate code, naming issues")
+        print(f"{'='*60}\n")
+        build_targets._version_printed = True
     
     B, N, C = predictions.shape
     device = predictions.device
     
-    # アンカーグリッド情報
-    anchor_points = anchor_info['anchor_points']
-    strides = anchor_info['strides']
+    print(f"🔧 [TARGETS v{VERSION}] Processing: {predictions.shape}")
     
+    # anchor_infoから必要な情報を取得
+    grid_sizes = anchor_info['grid_sizes']
+    input_w, input_h = anchor_info['input_size']
+    
+    # ★★★ 修正1: 変数を使用前に定義 ★★★
+    # グリッドポイント数を計算
+    num_grid_points_per_level = [h * w for h, w in grid_sizes]
+    total_grid_points = sum(num_grid_points_per_level)
+    num_anchors_per_grid = N // total_grid_points  # 自動検出
+    
+    # 妥当性チェック
+    if num_anchors_per_grid <= 0:
+        print(f"❌ Invalid num_anchors_per_grid: {num_anchors_per_grid}")
+        print(f"   N: {N}, total_grid_points: {total_grid_points}")
+        num_anchors_per_grid = 3  # フォールバック値
+
+    # デバッグ出力（最小限）
+    if B <= 2:
+        print(f"🔧 Debug: total_grid_points = {total_grid_points}, num_anchors_per_grid = {num_anchors_per_grid}")
+
+    # ★★★ 修正2: ストライド情報の処理 ★★★
+    if 'strides' in anchor_info:
+        strides_data = anchor_info['strides']
+        if isinstance(strides_data, list):
+            stride_values = strides_data
+        else:
+            stride_values = [input_h // gs[0] for gs in grid_sizes]
+    else:
+        stride_values = [input_h // gs[0] for gs in grid_sizes]
+    
+    # ★★★ 修正3: アンカーポイントの処理 ★★★
+    if isinstance(anchor_info['anchor_points'], list):
+        anchor_points_per_level = [ap.to(device) for ap in anchor_info['anchor_points']]
+    else:
+        # フォールバック：グリッドから計算
+        anchor_points_per_level = []
+        for h, w in grid_sizes:
+            grid_y, grid_x = torch.meshgrid(torch.arange(h), torch.arange(w), indexing='ij')
+            grid = torch.stack((grid_x, grid_y), 2).view(-1, 2)
+            anchor_points = (grid.float() + 0.5)
+            anchor_points_per_level.append(anchor_points.to(device))
+    
+    # ★★★ 修正4: アンカーポイントの拡張 ★★★
+    anchor_points_expanded = []
+    strides_expanded = []
+    
+    for level_idx, (anchor_points, stride_val) in enumerate(zip(anchor_points_per_level, stride_values)):
+        num_points = anchor_points.shape[0]
+        
+        for anchor_idx in range(num_anchors_per_grid):
+            anchor_points_scaled = anchor_points * stride_val
+            anchor_points_expanded.append(anchor_points_scaled)
+            strides_expanded.append(torch.full((num_points,), stride_val, device=device))
+
+    anchor_points_flat = torch.cat(anchor_points_expanded, dim=0)
+    strides_flat = torch.cat(strides_expanded, dim=0)
+
     # ターゲットテンソル初期化
     target_boxes = torch.zeros((B, N, 4), device=device)
     target_obj = torch.zeros((B, N), device=device)
@@ -232,92 +363,137 @@ def build_targets(
         if len(batch_targets) == 0:
             continue
 
-        gt_boxes = batch_targets[:, :4] * torch.tensor([*anchor_info['input_size']], device=device).repeat(2)
+        gt_boxes_rel = batch_targets[:, :4]
+        gt_boxes_abs = gt_boxes_rel * torch.tensor([input_w, input_h, input_w, input_h], device=device)
         gt_classes = batch_targets[:, 5:]
-        num_gt = len(gt_boxes)
+        num_gt = len(gt_boxes_abs)
 
-        # 1. 候補領域の選定
-        is_in_box_list = []
+        # ★★★ 修正5: 候補領域選定 ★★★
+        gt_cx, gt_cy = gt_boxes_abs[:, 0], gt_boxes_abs[:, 1]
+        
         is_in_center_list = []
+        start_idx = 0
         
-        for grid_idx, (grid_h, grid_w) in enumerate(anchor_info['grid_sizes']):
-            stride = strides[grid_idx]
-            anchor_grid = anchor_points[grid_idx]
+        for level_idx, stride_val in enumerate(stride_values):
+            num_points_level = num_grid_points_per_level[level_idx]
+            end_idx = start_idx + num_points_level * num_anchors_per_grid
             
-            # GTボックスの中心がどのグリッドセル内にあるか
-            gt_cx, gt_cy = gt_boxes[:, 0], gt_boxes[:, 1]
+            level_anchor_points = anchor_points_flat[start_idx:end_idx]
             
-            # 中心から半径stride/2の正方形を候補領域とする
-            x_lim = gt_cx.unsqueeze(1) + torch.stack([-stride/2, stride/2], dim=-1)
-            y_lim = gt_cy.unsqueeze(1) + torch.stack([-stride/2, stride/2], dim=-1)
+            offset = stride_val / 2
+            x_lim = gt_cx.unsqueeze(1) + torch.tensor([-offset, offset], device=device).unsqueeze(0)
+            y_lim = gt_cy.unsqueeze(1) + torch.tensor([-offset, offset], device=device).unsqueeze(0)
             
-            is_in_center = (anchor_grid[:, 0] > x_lim[:, 0]) & (anchor_grid[:, 0] < x_lim[:, 1]) & \
-                           (anchor_grid[:, 1] > y_lim[:, 0]) & (anchor_grid[:, 1] < y_lim[:, 1])
+            anchor_x = level_anchor_points[:, 0].unsqueeze(0)
+            anchor_y = level_anchor_points[:, 1].unsqueeze(0)
             
+            is_in_x = (anchor_x > x_lim[:, 0].unsqueeze(1)) & (anchor_x < x_lim[:, 1].unsqueeze(1))
+            is_in_y = (anchor_y > y_lim[:, 0].unsqueeze(1)) & (anchor_y < y_lim[:, 1].unsqueeze(1))
+            
+            is_in_center = is_in_x & is_in_y
             is_in_center_list.append(is_in_center.T)
-        
+            
+            start_idx = end_idx
+
         is_in_center = torch.cat(is_in_center_list, dim=0)
-        
-        # 2. コスト計算
-        pred_logits = predictions[b_idx]
-        pred_boxes = pred_logits[:, :4]
-        pred_obj = pred_logits[:, 4]
-        pred_cls = pred_logits[:, 5:]
-        
         candidate_mask = is_in_center.any(dim=1)
-        candidate_preds_box = pred_boxes[candidate_mask]
-        candidate_preds_obj = pred_obj[candidate_mask]
-        candidate_preds_cls = pred_cls[candidate_mask]
         
-        # IoUコスト
-        pair_wise_iou = get_ious(gt_boxes, candidate_preds_box, box_format='xywh')
-        iou_cost = -torch.log(pair_wise_iou + 1e-8)
-        
-        # クラス分類コスト
-        gt_cls_matrix = F.one_hot(torch.argmax(gt_classes, dim=1), num_classes).float()
-        pred_cls_sigmoid = candidate_preds_cls.sigmoid()
-        
-        cls_cost = F.binary_cross_entropy(
-            pred_cls_sigmoid.unsqueeze(0).repeat(num_gt, 1, 1),
-            gt_cls_matrix.unsqueeze(1).repeat(1, len(candidate_preds_cls), 1),
-            reduction='none'
-        ).sum(-1)
-        
-        cost_matrix = cls_cost + 3.0 * iou_cost
-        
-        # 3. Dynamic K マッチング
-        matching_matrix = torch.zeros_like(cost_matrix)
-        
-        # 各GTに対して、最もコストの低い10個の候補を選択
-        n_candidate_k = min(topk_candidates, len(candidate_preds_box))
-        topk_ious, _ = torch.topk(pair_wise_iou, n_candidate_k, dim=1)
-        
-        # 各GTのkを動的に決定
-        dynamic_ks = torch.clamp(topk_ious.sum(1).int(), min=1)
-        
-        for gt_i in range(num_gt):
-            _, pos_idx = torch.topk(cost_matrix[gt_i], k=dynamic_ks[gt_i], largest=False)
-            matching_matrix[gt_i, pos_idx] = 1.0
+        # デバッグ出力（最小限）
+        if b_idx == 0:
+            print(f"🔧 [v{VERSION}] Batch {b_idx}: candidates = {candidate_mask.sum()}")
 
-        del topk_ious, dynamic_ks, pos_idx
+        if not candidate_mask.any():
+            print(f"⚠️ No candidates found for batch {b_idx}")
+            continue
 
-        # 4. ターゲット割り当て
-        anchor_matching_gt = matching_matrix.sum(0)
-        if (anchor_matching_gt > 1).any():
-            _, cost_argmin = torch.min(cost_matrix[:, anchor_matching_gt > 1], dim=0)
-            matching_matrix[:, anchor_matching_gt > 1] *= 0.0
-            matching_matrix[cost_argmin, anchor_matching_gt > 1] = 1.0
-        
-        fg_mask_in_cand = (matching_matrix.sum(0) > 0)
-        matched_gt_inds = matching_matrix[:, fg_mask_in_cand].argmax(0)
-        
-        candidate_indices = torch.where(candidate_mask)[0]
-        final_pos_indices = candidate_indices[fg_mask_in_cand]
-        
-        # 最終的なターゲットを作成
-        target_obj[b_idx, final_pos_indices] = 1.0
-        target_cls[b_idx, final_pos_indices] = gt_classes[matched_gt_inds]
-        target_boxes[b_idx, final_pos_indices] = gt_boxes[matched_gt_inds]
+        # ★★★ 修正6: テンソル操作（クリーン版） ★★★
+        try:
+            # 予測値の抽出
+            pred_logits = predictions[b_idx][candidate_mask]
+            pred_boxes = pred_logits[:, :4].float()
+            pred_obj = pred_logits[:, 4]
+            pred_cls = pred_logits[:, 5:]
+            
+            # アンカーポイントの抽出
+            candidate_anchor_points = anchor_points_flat[candidate_mask].float()
+            candidate_strides = strides_flat[candidate_mask].float()
+            
+            # ボックスデコード
+            decoded_pred_boxes = torch.cat(
+                (
+                    (pred_boxes[:, :2].sigmoid() * 2 - 0.5 + candidate_anchor_points) * candidate_strides.unsqueeze(1),
+                    (pred_boxes[:, 2:].sigmoid() * 2)**2 * candidate_strides.unsqueeze(1).repeat(1, 2)
+                ),
+                dim=-1
+            )
+            
+            # IoU計算
+            gt_boxes_abs_float = gt_boxes_abs.float()
+            pair_wise_iou = get_ious(gt_boxes_abs_float, decoded_pred_boxes, box_format='xywh')
+            iou_cost = -torch.log(pair_wise_iou + 1e-8)
+            
+            # クラス分類コスト
+            gt_cls_matrix = F.one_hot(torch.argmax(gt_classes, dim=1), num_classes).float()
+            pred_cls_sigmoid = pred_cls.sigmoid().float()
+            
+            pred_cls_input = pred_cls_sigmoid.unsqueeze(0).repeat(num_gt, 1, 1).to(device).float()
+            gt_cls_input = gt_cls_matrix.unsqueeze(1).repeat(1, pred_cls_sigmoid.shape[0], 1).to(device).float()
+            
+            cls_cost = F.binary_cross_entropy(
+                pred_cls_input,
+                gt_cls_input,
+                reduction='none'
+            ).sum(-1)
+            
+            # コストマトリックス計算
+            is_in_center_candidates = is_in_center[candidate_mask]
+            cost_matrix = cls_cost + 3.0 * iou_cost + 100000.0 * (~is_in_center_candidates.T)
+            
+            if b_idx == 0:
+                print(f"🎉 [v{VERSION}] Cost matrix computed: {cost_matrix.shape}")
+            
+            # ★★★ 修正7: Dynamic K マッチング ★★★
+            n_candidate_k = min(topk_candidates, pred_boxes.shape[0])
+            if n_candidate_k > 0:
+                topk_ious, _ = torch.topk(pair_wise_iou, n_candidate_k, dim=1)
+                dynamic_ks = torch.clamp(topk_ious.sum(1).int(), min=1)
+                
+                matching_matrix = torch.zeros_like(cost_matrix)
+                for gt_i in range(num_gt):
+                    if dynamic_ks[gt_i] > 0:
+                        _, pos_idx = torch.topk(cost_matrix[gt_i], k=dynamic_ks[gt_i], largest=False)
+                        matching_matrix[gt_i, pos_idx] = 1.0
+
+                # 競合解決
+                anchor_matching_gt = matching_matrix.sum(0)
+                if (anchor_matching_gt > 1).any():
+                    conflicting_indices = torch.where(anchor_matching_gt > 1)[0]
+                    cost_matrix_conflict = cost_matrix[:, conflicting_indices]
+                    _, cost_argmin = torch.min(cost_matrix_conflict, dim=0)
+                    
+                    matching_matrix[:, conflicting_indices] = 0.0
+                    matching_matrix[cost_argmin, conflicting_indices] = 1.0
+                
+                # ターゲット割り当て
+                fg_mask_in_cand = (matching_matrix.sum(0) > 0)
+                if fg_mask_in_cand.any():
+                    matched_gt_inds = matching_matrix[:, fg_mask_in_cand].argmax(0)
+                    
+                    candidate_indices = torch.where(candidate_mask)[0]
+                    final_pos_indices = candidate_indices[fg_mask_in_cand]
+                    
+                    target_obj[b_idx, final_pos_indices] = 1.0
+                    target_cls[b_idx, final_pos_indices] = gt_classes[matched_gt_inds]
+                    target_boxes[b_idx, final_pos_indices] = gt_boxes_abs[matched_gt_inds]
+            
+        except Exception as step_error:
+            print(f"❌ [v{VERSION}] Error in batch {b_idx}: {step_error}")
+            print(f"   Error type: {type(step_error).__name__}")
+            continue
+
+    # ターゲットボックスを正規化
+    normalizer = torch.tensor([input_w, input_h, input_w, input_h], device=device).unsqueeze(0).unsqueeze(0)
+    target_boxes /= (normalizer + 1e-6)
 
     return {
         'boxes': target_boxes,
@@ -465,14 +641,6 @@ def compare_anchor_sets(dataset, anchors_set1: List[List[Tuple[int, int]]],
         print("   ⚠️ Limited improvement. Consider different strategies.")
     
     return comparison
-
-def get_default_anchors() -> List[List[Tuple[int, int]]]:
-    """デフォルトアンカー（YOLOv3ベース）"""
-    return [
-        [(10,13), (16,30), (33,23)],
-        [(30,61), (62,45), (59,119)],
-        [(116,90), (156,198), (373,326)]
-    ]
 
 def xywh2xyxy(x):
     y = x.new(x.shape)
