@@ -15,6 +15,17 @@ class Config:
     num_epochs = 50
     learning_rate = 1e-3
     
+    # --- Phase 2 追加項目 ---
+    # データ拡張
+    augment = True
+    brightness_range = 0.3
+    noise_level = 0.02
+
+    # 学習最適化
+    weight_decay = 1e-4
+    momentum = 0.9
+    # --- ここまで ---
+
     # 表示設定
     print_interval = 50
     save_interval = 5
