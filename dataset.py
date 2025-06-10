@@ -10,7 +10,7 @@ import random # 追加
 from version_tracker import create_version_tracker, VersionTracker
 
 # バージョン管理システム初期化
-dataset_version = create_version_tracker("Dataset System v1.0", "dataset.py")
+dataset_version = create_version_tracker("Dataset System v1.2", "dataset.py")
 dataset_version.add_modification("FLIR データセット対応")
 dataset_version.add_modification("collate_fn実装")
 dataset_version.add_modification("データ拡張機能を追加 (Phase 2)") # 追加
