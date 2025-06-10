@@ -5,68 +5,14 @@ import cv2
 import numpy as np
 import os
 
-import datetime
-import hashlib
-# ===== ver管理 =====
-class VersionTracker:
-    """スクリプトのバージョンと修正履歴を追跡"""
-    _all_trackers = {}
-
-    def __init__(self, script_name, version="1.0.0"):
-        self.script_name = script_name
-        self.version = version
-        self.load_time = datetime.datetime.now()
-        self.modifications = []
-        
-        VersionTracker._all_trackers[script_name] = self
-        
-    def add_modification(self, description, author="AI Assistant"):
-        """修正履歴を追加"""
-        timestamp = datetime.datetime.now()
-        self.modifications.append({
-            'timestamp': timestamp,
-            'description': description,
-            'author': author
-        })
-        
-    def get_file_hash(self, filepath):
-        """ファイルのハッシュ値を計算（変更検出用）"""
-        try:
-            with open(filepath, 'rb') as f:
-                content = f.read()
-                return hashlib.md5(content).hexdigest()[:8]
-        except:
-            return "unknown"
-    
-    def print_version_info(self):
-        """バージョン情報を表示"""
-        print(f"\n{'='*60}")
-        print(f"📋 {self.script_name} - Version {self.version}")
-        print(f"⏰ Loaded: {self.load_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        if hasattr(self, 'file_hash'):
-            print(f"🔗 File Hash: {self.file_hash}")
-        
-        if self.modifications:
-            print(f"📝 Recent Modifications ({len(self.modifications)}):")
-            for i, mod in enumerate(self.modifications[-3:], 1):  # 最新3件
-                print(f"   {i}. {mod['timestamp'].strftime('%H:%M:%S')} - {mod['description']}")
-        
-        print(f"{'='*60}\n")
-
-# 各ファイル用のバージョントラッカーを作成
-def create_version_tracker(script_name, filepath=None):
-    """バージョントラッカーを作成"""
-    tracker = VersionTracker(script_name)
-    
-    if filepath:
-        tracker.file_hash = tracker.get_file_hash(filepath)
-    
-    return tracker
+# ★★★ 共有VersionTrackerをインポート ★★★
+from version_tracker import create_version_tracker, VersionTracker
 
 # バージョン管理システム初期化
-training_version = create_version_tracker("Unified Training System v0.0", "dataset.py")
-training_version.add_modification("プロトタイプ")
+dataset_version = create_version_tracker("Dataset System v1.0", "dataset.py")
+dataset_version.add_modification("FLIR データセット対応")
+dataset_version.add_modification("collate_fn実装")
+
 
 class FLIRDataset(Dataset):
     def __init__(self, img_dir, label_dir, img_size=416):
@@ -103,8 +49,6 @@ class FLIRDataset(Dataset):
 
 def collate_fn(batch):
     """カスタムcollate関数 - 異なるサイズのターゲットを処理"""
-    #ver取得
-    training_version.print_version_info()
 
     images, targets = zip(*batch)
     images = torch.stack(images, 0)

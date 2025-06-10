@@ -3,68 +3,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import datetime
-import hashlib
-# ===== ver管理 =====
-class VersionTracker:
-    """スクリプトのバージョンと修正履歴を追跡"""
-    _all_trackers = {}
-
-    def __init__(self, script_name, version="1.0.0"):
-        self.script_name = script_name
-        self.version = version
-        self.load_time = datetime.datetime.now()
-        self.modifications = []
-        
-        VersionTracker._all_trackers[script_name] = self
-        
-    def add_modification(self, description, author="AI Assistant"):
-        """修正履歴を追加"""
-        timestamp = datetime.datetime.now()
-        self.modifications.append({
-            'timestamp': timestamp,
-            'description': description,
-            'author': author
-        })
-        
-    def get_file_hash(self, filepath):
-        """ファイルのハッシュ値を計算（変更検出用）"""
-        try:
-            with open(filepath, 'rb') as f:
-                content = f.read()
-                return hashlib.md5(content).hexdigest()[:8]
-        except:
-            return "unknown"
-    
-    def print_version_info(self):
-        """バージョン情報を表示"""
-        print(f"\n{'='*60}")
-        print(f"📋 {self.script_name} - Version {self.version}")
-        print(f"⏰ Loaded: {self.load_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        if hasattr(self, 'file_hash'):
-            print(f"🔗 File Hash: {self.file_hash}")
-        
-        if self.modifications:
-            print(f"📝 Recent Modifications ({len(self.modifications)}):")
-            for i, mod in enumerate(self.modifications[-3:], 1):  # 最新3件
-                print(f"   {i}. {mod['timestamp'].strftime('%H:%M:%S')} - {mod['description']}")
-        
-        print(f"{'='*60}\n")
-
-# 各ファイル用のバージョントラッカーを作成
-def create_version_tracker(script_name, filepath=None):
-    """バージョントラッカーを作成"""
-    tracker = VersionTracker(script_name)
-    
-    if filepath:
-        tracker.file_hash = tracker.get_file_hash(filepath)
-    
-    return tracker
+# ★★★ 共有VersionTrackerをインポート ★★★
+from version_tracker import create_version_tracker, VersionTracker
 
 # バージョン管理システム初期化
-training_version = create_version_tracker("Loss System v0.0", "loss.py")
-training_version.add_modification("プロトタイプ")
+loss_version = create_version_tracker("Loss System v1.0", "loss.py")
+loss_version.add_modification("YOLOLoss実装")
+loss_version.add_modification("座標損失改善")
 
 
 class YOLOLoss(nn.Module):
