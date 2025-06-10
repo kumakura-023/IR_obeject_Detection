@@ -14,12 +14,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
+from collections import defaultdict
 import numpy as np
 import cv2
 import time
 import random
 from torch.optim.lr_scheduler import CosineAnnealingLR
-
+import datetime
+import hashlib
 # ===== ver管理 =====
 class VersionTracker:
     """スクリプトのバージョンと修正履歴を追跡"""
@@ -75,9 +77,10 @@ def create_version_tracker(script_name, filepath=None):
     return tracker
 
 # バージョン管理システム初期化
-training_version = create_version_tracker("Unified Training System v0.1", "prototype.py")
-training_version.add_modification("プロトタイプ")
-
+training_version = create_version_tracker("Unified Training System v0.2", "prototype.py")
+##training_version.add_modification("プロトタイプ")
+##training_version.add_modification("import追加")
+training_version.add_modification("ファイル分割・テンソルサイズ一致")
 
 
 # ===== 設定 =====
@@ -348,7 +351,8 @@ def train_epoch(model, dataloader, criterion, optimizer, epoch, device):
 # ===== メイン =====
 def main():
     print("🚀 Starting Improved YOLO Training v1")
-    
+    # 最初にバージョン情報を表示
+    training_version.print_version_info()
     cfg = Config()
     os.makedirs(cfg.save_dir, exist_ok=True)
     
