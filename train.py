@@ -1,7 +1,7 @@
-# train.py
+# train.py - Phase 3 EMA&検証分割完全版
 import torch
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 import time
 import os
 
@@ -9,7 +9,6 @@ from config import Config
 from dataset import FLIRDataset, collate_fn
 from model import SimpleYOLO
 from loss import YOLOLoss
-
 
 # ★★★ 共有VersionTrackerをインポート ★★★
 from version_tracker import (
@@ -21,60 +20,544 @@ from version_tracker import (
 )
 
 # バージョン管理システム初期化
-training_version = create_version_tracker("Training System v1.1", "train.py")
+training_version = create_version_tracker("Training System v1.3 - Phase 3 Complete", "train.py")
 training_version.add_modification("学習ループ実装")
 training_version.add_modification("プロジェクトバージョン表示追加")
 training_version.add_modification("gpu未使用原因の追究")
+training_version.add_modification("Phase 3: EMA & 検証分割実装")
 
-def test_version_tracking():
-    """バージョン管理システムの動作テスト"""
-    print("🧪 バージョン管理システムテスト開始")
+# ===== Phase 3: EMAクラス実装 =====
+class EMAModel:
+    """Exponential Moving Average for model parameters"""
+    def __init__(self, model, decay=0.9999):
+        self.model = model
+        self.decay = decay
+        self.shadow = {}
+        self.backup = {}
+        self.register()
+
+    def register(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                self.shadow[name] = param.data.clone()
+
+    def update(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.shadow
+                new_average = (1.0 - self.decay) * param.data + self.decay * self.shadow[name]
+                self.shadow[name] = new_average.clone()
+
+    def apply_shadow(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.shadow
+                self.backup[name] = param.data
+                param.data = self.shadow[name]
+
+    def restore(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.backup
+                param.data = self.backup[name]
+        self.backup = {}
+
+# ===== Phase 3: データ分割関数 =====
+def create_train_val_split(dataset, val_split=0.15):
+    """訓練・検証データの分割"""
+    total_size = len(dataset)
+    val_size = int(total_size * val_split)
+    train_size = total_size - val_size
     
-    # デバッグ情報を表示
-    debug_version_status()
+    train_dataset, val_dataset = random_split(
+        dataset, [train_size, val_size],
+        generator=torch.Generator().manual_seed(42)  # 再現性のため
+    )
     
-    # 登録されているファイル数をチェック
-    count = get_version_count()
-    print(f"\n📊 現在の登録状況:")
-    print(f"   登録済みファイル数: {count}")
-    print(f"   期待値: 4ファイル (dataset, model, loss, train)")
+    print(f"📊 データ分割完了:")
+    print(f"   Train: {train_size} images ({100*(1-val_split):.1f}%)")
+    print(f"   Validation: {val_size} images ({100*val_split:.1f}%)")
+    return train_dataset, val_dataset
+
+# ===== Phase 3: 検証関数 =====
+def validate_model(model, val_dataloader, criterion, device):
+    """検証実行"""
+    model.eval()
+    total_val_loss = 0
+    val_batches = 0
     
-    if count >= 4:
-        print("✅ バージョン管理システム正常動作")
+    with torch.no_grad():
+        for images, targets in val_dataloader:
+            images = images.to(device, non_blocking=True)
+            
+            predictions, grid_size = model(images)
+            loss = criterion(predictions, targets, grid_size)
+            
+            total_val_loss += loss.item()
+            val_batches += 1
+    
+    avg_val_loss = total_val_loss / val_batches if val_batches > 0 else float('inf')
+    return avg_val_loss
+
+# ===== Phase 3: データローダーセットアップ =====
+def setup_dataloaders(cfg):
+    """データローダーセットアップ（検証分割対応）"""
+    # 全データセット作成
+    full_dataset = FLIRDataset(cfg.train_img_dir, cfg.train_label_dir, cfg.img_size, augment=cfg.augment)
+    
+    # 検証分割
+    if cfg.validation_split > 0:
+        train_dataset, val_dataset = create_train_val_split(full_dataset, cfg.validation_split)
     else:
-        print(f"⚠️ 期待される4ファイルのうち{count}ファイルのみ登録済み")
-        print("   他のファイルがまだ読み込まれていない可能性があります")
-
-def train_one_epoch(model, dataloader, criterion, optimizer, device):
-    model.train()
-    total_loss = 0
+        train_dataset = full_dataset
+        val_dataset = None
     
-    for batch_idx, (images, targets) in enumerate(dataloader):
-        images = images.to(device)
-        
-        # Forward
-        predictions, grid_size = model(images)
-        loss = criterion(predictions, targets, grid_size)
-        
-        # Backward
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        
-        total_loss += loss.item()
-        
-        # 進捗表示
-        if batch_idx % Config.print_interval == 0:
-            print(f"Batch [{batch_idx}/{len(dataloader)}] Loss: {loss.item():.4f}")
+    # DataLoader作成
+    num_workers = 2 if cfg.device.type == 'cuda' else 0
+    pin_memory = cfg.device.type == 'cuda'
     
-    return total_loss / len(dataloader)
+    train_dataloader = DataLoader(
+        train_dataset, 
+        batch_size=cfg.batch_size, 
+        shuffle=True, 
+        collate_fn=collate_fn,
+        num_workers=num_workers,
+        pin_memory=pin_memory
+    )
+    
+    val_dataloader = None
+    if val_dataset:
+        val_dataloader = DataLoader(
+            val_dataset,
+            batch_size=cfg.batch_size,
+            shuffle=False,  # 検証時はシャッフルしない
+            collate_fn=collate_fn,
+            num_workers=num_workers,
+            pin_memory=pin_memory
+        )
+    
+    print(f"   Train batches: {len(train_dataloader)}")
+    if val_dataloader:
+        print(f"   Validation batches: {len(val_dataloader)}")
+    
+    return train_dataloader, val_dataloader
 
+# ===== Phase 3: EMA&検証分割対応学習ループ =====
+def optimized_training_loop_with_ema_val(model, train_dataloader, val_dataloader, criterion, cfg):
+    """Phase 3完全版: EMA + 検証分割対応学習ループ"""
+    
+    # オプティマイザ設定
+    if cfg.optimizer_type == "AdamW":
+        optimizer = optim.AdamW(
+            model.parameters(),
+            lr=cfg.learning_rate,
+            weight_decay=cfg.weight_decay,
+            betas=cfg.betas,
+            eps=cfg.eps
+        )
+    else:
+        optimizer = optim.Adam(model.parameters(), lr=cfg.learning_rate)
+    
+    # EMA初期化
+    ema = None
+    if cfg.use_ema:
+        ema = EMAModel(model, decay=cfg.ema_decay)
+        print(f"🔄 EMA initialized with decay {cfg.ema_decay}")
+    
+    # スケジューラ設定
+    scheduler = None
+    if cfg.use_scheduler:
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, 
+            T_max=cfg.num_epochs,
+            eta_min=cfg.min_lr
+        )
+    
+    # Early Stopping設定
+    best_val_loss = float('inf')
+    patience_counter = 0
+    
+    # 学習統計
+    train_losses = []
+    val_losses = []
+    learning_rates = []
+    
+    print(f"🚀 Phase 3 EMA&検証分割学習開始")
+    print(f"   Optimizer: {cfg.optimizer_type}")
+    print(f"   EMA: {'ON' if cfg.use_ema else 'OFF'}")
+    print(f"   Validation: {'ON' if val_dataloader else 'OFF'}")
+    
+    for epoch in range(cfg.num_epochs):
+        epoch_start = time.time()
+        
+        # ===== ウォームアップ処理 =====
+        if epoch < cfg.warmup_epochs:
+            warmup_lr = cfg.learning_rate * (epoch + 1) / cfg.warmup_epochs
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = warmup_lr
+            print(f"🔥 Warmup Epoch {epoch+1}: LR = {warmup_lr:.6f}")
+        
+        # ===== 訓練フェーズ =====
+        model.train()
+        epoch_loss = 0
+        batch_count = 0
+        
+        for batch_idx, (images, targets) in enumerate(train_dataloader):
+            images = images.to(cfg.device, non_blocking=True)
+            
+            # Forward
+            predictions, grid_size = model(images)
+            loss = criterion(predictions, targets, grid_size)
+            
+            # Backward
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.gradient_clip)
+            optimizer.step()
+            
+            # EMA更新
+            if ema:
+                ema.update()
+            
+            epoch_loss += loss.item()
+            batch_count += 1
+            
+            if batch_idx % 100 == 0:
+                current_lr = optimizer.param_groups[0]['lr']
+                avg_loss = epoch_loss / (batch_idx + 1)
+                print(f"   Batch [{batch_idx:4d}] Loss: {loss.item():8.4f} "
+                      f"AvgLoss: {avg_loss:8.4f} LR: {current_lr:.6f}")
+        
+        avg_train_loss = epoch_loss / batch_count
+        
+        # ===== 検証フェーズ =====
+        val_loss = float('inf')
+        if val_dataloader and epoch % cfg.validate_every == 0:
+            # EMAモデルで検証
+            if ema:
+                ema.apply_shadow()
+            
+            val_loss = validate_model(model, val_dataloader, criterion, cfg.device)
+            
+            if ema:
+                ema.restore()
+        
+        # スケジューラ更新
+        if scheduler and epoch >= cfg.warmup_epochs:
+            scheduler.step()
+        
+        epoch_time = time.time() - epoch_start
+        current_lr = optimizer.param_groups[0]['lr']
+        
+        # 統計記録
+        train_losses.append(avg_train_loss)
+        val_losses.append(val_loss)
+        learning_rates.append(current_lr)
+        
+        # ログ表示
+        val_str = f"Val: {val_loss:6.4f}" if val_loss != float('inf') else "Val: ----"
+        print(f"\n📈 Epoch [{epoch+1:2d}/{cfg.num_epochs}] "
+              f"Train: {avg_train_loss:6.4f} {val_str} "
+              f"Time: {epoch_time:4.1f}s LR: {current_lr:.6f}")
+        
+        # Early Stopping & Best Model Saving
+        current_loss = val_loss if val_loss != float('inf') else avg_train_loss
+        
+        if current_loss < best_val_loss - cfg.min_improvement:
+            best_val_loss = current_loss
+            patience_counter = 0
+            
+            # EMAモデルを保存
+            if ema:
+                ema.apply_shadow()
+            
+            save_best_model_with_ema(model, optimizer, ema, epoch, best_val_loss, cfg)
+            
+            if ema:
+                ema.restore()
+            
+            print(f"🎉 New best loss: {best_val_loss:.4f}")
+        else:
+            patience_counter += 1
+            print(f"⏳ No improvement for {patience_counter}/{cfg.patience} epochs")
+            
+            if patience_counter >= cfg.patience:
+                print(f"🛑 Early stopping triggered")
+                break
+        
+        # 定期保存
+        if (epoch + 1) % cfg.save_interval == 0:
+            save_checkpoint(model, optimizer, epoch, avg_train_loss, cfg)
+        
+        # メモリクリーンアップ
+        if cfg.device.type == 'cuda':
+            torch.cuda.empty_cache()
+    
+    print(f"\n✅ Phase 3 EMA&検証分割学習完了!")
+    print(f"🏆 Best Loss: {best_val_loss:.4f}")
+    
+    return train_losses, val_losses, learning_rates, best_val_loss
 
-import torch
-import time
-import psutil
-import os
+# ===== 旧学習ループ（後方互換性のため残す） =====
+def optimized_training_loop(model, dataloader, criterion, cfg):
+    """Phase 3: 最適化された学習ループ（旧版・後方互換性）"""
+    
+    # ===== オプティマイザ設定 =====
+    if cfg.optimizer_type == "AdamW":
+        optimizer = optim.AdamW(
+            model.parameters(),
+            lr=cfg.learning_rate,
+            weight_decay=cfg.weight_decay,
+            betas=cfg.betas,
+            eps=cfg.eps
+        )
+    else:
+        optimizer = optim.Adam(model.parameters(), lr=cfg.learning_rate)
+    
+    # ===== スケジューラ設定 =====
+    scheduler = None
+    if cfg.use_scheduler:
+        if cfg.scheduler_type == "cosine":
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, 
+                T_max=cfg.num_epochs,
+                eta_min=cfg.min_lr
+            )
+        elif cfg.scheduler_type == "step":
+            scheduler = optim.lr_scheduler.StepLR(
+                optimizer,
+                step_size=10,
+                gamma=0.1
+            )
+    
+    # ===== Early Stopping設定 =====
+    best_loss = float('inf')
+    patience_counter = 0
+    
+    # ===== 学習統計 =====
+    train_losses = []
+    learning_rates = []
+    
+    print(f"🚀 Phase 3 最適化学習開始（旧版）")
+    print(f"   Optimizer: {cfg.optimizer_type}")
+    print(f"   Scheduler: {cfg.scheduler_type if cfg.use_scheduler else 'None'}")
+    print(f"   Initial LR: {cfg.learning_rate}")
+    
+    for epoch in range(cfg.num_epochs):
+        epoch_start = time.time()
+        
+        # ===== ウォームアップ処理 =====
+        if epoch < cfg.warmup_epochs:
+            warmup_lr = cfg.learning_rate * (epoch + 1) / cfg.warmup_epochs
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = warmup_lr
+            print(f"🔥 Warmup Epoch {epoch+1}: LR = {warmup_lr:.6f}")
+        
+        # ===== 学習エポック =====
+        model.train()
+        epoch_loss = 0
+        batch_count = 0
+        
+        for batch_idx, (images, targets) in enumerate(dataloader):
+            images = images.to(cfg.device, non_blocking=True)
+            
+            # Forward
+            predictions, grid_size = model(images)
+            loss = criterion(predictions, targets, grid_size)
+            
+            # Backward
+            optimizer.zero_grad()
+            loss.backward()
+            
+            # 勾配クリッピング
+            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.gradient_clip)
+            
+            optimizer.step()
+            
+            epoch_loss += loss.item()
+            batch_count += 1
+            
+            # バッチログ（改善）
+            if batch_idx % 100 == 0:
+                current_lr = optimizer.param_groups[0]['lr']
+                avg_loss = epoch_loss / (batch_idx + 1)
+                print(f"   Batch [{batch_idx:4d}] Loss: {loss.item():8.4f} "
+                      f"AvgLoss: {avg_loss:8.4f} LR: {current_lr:.6f}")
+        
+        # ===== エポック終了処理 =====
+        avg_epoch_loss = epoch_loss / batch_count
+        epoch_time = time.time() - epoch_start
+        
+        # スケジューラ更新（ウォームアップ後）
+        if scheduler and epoch >= cfg.warmup_epochs:
+            scheduler.step()
+        
+        current_lr = optimizer.param_groups[0]['lr']
+        
+        # ===== 統計記録 =====
+        train_losses.append(avg_epoch_loss)
+        learning_rates.append(current_lr)
+        
+        # ===== ログ表示 =====
+        print(f"\n📈 Epoch [{epoch+1:2d}/{cfg.num_epochs}] "
+              f"Loss: {avg_epoch_loss:8.4f} Time: {epoch_time:5.1f}s LR: {current_lr:.6f}")
+        
+        # ===== Early Stopping & Model Saving =====
+        if avg_epoch_loss < best_loss - cfg.min_improvement:
+            best_loss = avg_epoch_loss
+            patience_counter = 0
+            
+            # ベストモデル保存
+            save_optimized_model(model, optimizer, epoch, best_loss, cfg)
+            print(f"🎉 New best loss: {best_loss:.4f}")
+            
+        else:
+            patience_counter += 1
+            print(f"⏳ No improvement for {patience_counter}/{cfg.patience} epochs")
+            
+            if patience_counter >= cfg.patience:
+                print(f"🛑 Early stopping triggered")
+                break
+        
+        # ===== 定期保存 =====
+        if (epoch + 1) % cfg.save_interval == 0:
+            save_checkpoint(model, optimizer, epoch, avg_epoch_loss, cfg)
+        
+        # ===== メモリクリーンアップ =====
+        if cfg.device.type == 'cuda':
+            torch.cuda.empty_cache()
+    
+    # ===== 学習完了 =====
+    print(f"\n✅ Phase 3 学習完了!")
+    print(f"🏆 Best Loss: {best_loss:.4f}")
+    
+    return train_losses, learning_rates, best_loss
 
+# ===== EMA対応保存関数 =====
+def save_best_model_with_ema(model, optimizer, ema, epoch, loss, cfg):
+    """EMA対応の改良版モデル保存"""
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'loss': loss,
+        'ema_state_dict': ema.shadow if ema else None,
+        'config': {
+            'batch_size': cfg.batch_size,
+            'learning_rate': cfg.learning_rate,
+            'ema_decay': cfg.ema_decay if cfg.use_ema else None,
+            'validation_split': cfg.validation_split
+        },
+        'training_stats': {
+            'gpu_memory_peak': torch.cuda.max_memory_allocated(0) / 1024**3 if torch.cuda.is_available() else 0,
+            'parameters': sum(p.numel() for p in model.parameters())
+        },
+        'version_info': VersionTracker.get_all_trackers()
+    }
+    
+    save_path = os.path.join(cfg.save_dir, f'phase3_ema_val_loss_{loss:.4f}.pth')
+    torch.save(checkpoint, save_path)
+    print(f"💾 Phase 3 EMA model saved: {save_path}")
+
+def save_optimized_model(model, optimizer, epoch, loss, cfg):
+    """最適化されたモデル保存"""
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'loss': loss,
+        'config': {
+            'optimizer_type': cfg.optimizer_type,
+            'learning_rate': cfg.learning_rate,
+            'batch_size': cfg.batch_size,
+            'scheduler_type': cfg.scheduler_type if cfg.use_scheduler else None
+        },
+        'training_stats': {
+            'gpu_memory_peak': torch.cuda.max_memory_allocated(0) / 1024**3 if torch.cuda.is_available() else 0,
+            'parameters': sum(p.numel() for p in model.parameters())
+        },
+        'version_info': VersionTracker.get_all_trackers()
+    }
+    
+    save_path = os.path.join(cfg.save_dir, f'phase3_best_model_loss_{loss:.4f}.pth')
+    torch.save(checkpoint, save_path)
+    print(f"💾 Phase 3 best model saved: {save_path}")
+
+def save_checkpoint(model, optimizer, epoch, loss, cfg):
+    """定期チェックポイント保存"""
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'loss': loss,
+        'config_info': {
+            'batch_size': cfg.batch_size,
+            'learning_rate': cfg.learning_rate,
+            'optimizer_type': getattr(cfg, 'optimizer_type', 'Adam')
+        },
+        'version_info': VersionTracker.get_all_trackers()
+    }
+    
+    save_path = os.path.join(cfg.save_dir, f'checkpoint_epoch_{epoch+1}.pth')
+    torch.save(checkpoint, save_path)
+    print(f"💾 Checkpoint saved: {save_path}")
+
+def plot_training_progress(losses, lrs, val_losses=None, save_path="training_progress.png"):
+    """学習進捗を可視化（検証loss対応）"""
+    try:
+        import matplotlib.pyplot as plt
+        
+        if val_losses:
+            fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 4))
+        else:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+        
+        # Training Loss plot
+        ax1.plot(losses, 'b-', linewidth=2, label='Train Loss')
+        if val_losses:
+            # None値を除外してplot
+            valid_val_losses = [loss for loss in val_losses if loss != float('inf')]
+            valid_epochs = [i for i, loss in enumerate(val_losses) if loss != float('inf')]
+            if valid_val_losses:
+                ax1.plot(valid_epochs, valid_val_losses, 'r-', linewidth=2, label='Val Loss')
+        
+        ax1.set_title('Training Loss')
+        ax1.set_xlabel('Epoch')
+        ax1.set_ylabel('Loss')
+        ax1.grid(True, alpha=0.3)
+        ax1.set_yscale('log')  # Log scale for better visualization
+        if val_losses:
+            ax1.legend()
+        
+        # Learning Rate plot
+        ax2.plot(lrs, 'r-', linewidth=2)
+        ax2.set_title('Learning Rate')
+        ax2.set_xlabel('Epoch')
+        ax2.set_ylabel('Learning Rate')
+        ax2.grid(True, alpha=0.3)
+        ax2.set_yscale('log')
+        
+        # Validation Loss separate plot (if available)
+        if val_losses:
+            valid_val_losses = [loss for loss in val_losses if loss != float('inf')]
+            valid_epochs = [i for i, loss in enumerate(val_losses) if loss != float('inf')]
+            if valid_val_losses:
+                ax3.plot(valid_epochs, valid_val_losses, 'g-', linewidth=2)
+                ax3.set_title('Validation Loss')
+                ax3.set_xlabel('Epoch')
+                ax3.set_ylabel('Val Loss')
+                ax3.grid(True, alpha=0.3)
+                ax3.set_yscale('log')
+        
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.show()
+        
+        print(f"📊 Training progress saved to {save_path}")
+    except ImportError:
+        print("⚠️ matplotlib not available - skipping visualization")
+
+# ===== デバッグ・GPU関連機能 =====
 def comprehensive_gpu_check():
     """包括的なGPU環境チェック"""
     print("\n🔍 GPU環境詳細チェック")
@@ -106,236 +589,28 @@ def comprehensive_gpu_check():
     
     return True
 
-def check_model_device(model):
-    """モデルがGPUに配置されているか確認"""
-    print("\n🔍 モデルデバイス確認")
-    print("-"*40)
+def test_version_tracking():
+    """バージョン管理システムの動作テスト"""
+    print("🧪 バージョン管理システムテスト開始")
     
-    model_device = next(model.parameters()).device
-    print(f"Model device: {model_device}")
+    # デバッグ情報を表示
+    debug_version_status()
     
-    # 各レイヤーのデバイスをチェック
-    layers_on_gpu = 0
-    total_layers = 0
+    # 登録されているファイル数をチェック
+    count = get_version_count()
+    print(f"\n📊 現在の登録状況:")
+    print(f"   登録済みファイル数: {count}")
+    print(f"   期待値: 4ファイル (dataset, model, loss, train)")
     
-    for name, param in model.named_parameters():
-        total_layers += 1
-        if param.device.type == 'cuda':
-            layers_on_gpu += 1
-        elif total_layers <= 5:  # 最初の5レイヤーのみ表示
-            print(f"   ⚠️ {name}: {param.device}")
-    
-    print(f"GPU上のレイヤー: {layers_on_gpu}/{total_layers}")
-    
-    if layers_on_gpu == total_layers:
-        print("✅ モデル全体がGPU上にあります")
-        return True
+    if count >= 4:
+        print("✅ バージョン管理システム正常動作")
     else:
-        print(f"❌ {total_layers - layers_on_gpu} レイヤーがCPU上にあります")
-        return False
+        print(f"⚠️ 期待される4ファイルのうち{count}ファイルのみ登録済み")
+        print("   他のファイルがまだ読み込まれていない可能性があります")
 
-def check_data_device(images, targets):
-    """データがGPUに配置されているか確認"""
-    print(f"\n🔍 データデバイス確認")
-    print("-"*40)
-    
-    print(f"Images device: {images.device}")
-    print(f"Images shape: {images.shape}")
-    print(f"Images dtype: {images.dtype}")
-    
-    if isinstance(targets, list):
-        if len(targets) > 0 and torch.is_tensor(targets[0]):
-            print(f"Targets[0] device: {targets[0].device}")
-            print(f"Targets[0] shape: {targets[0].shape}")
-    else:
-        print(f"Targets device: {targets.device}")
-    
-    return images.device.type == 'cuda'
-
-def gpu_utilization_test():
-    """GPU使用率テスト"""
-    print("\n🔍 GPU使用率テスト")
-    print("-"*40)
-    
-    if not torch.cuda.is_available():
-        print("❌ CUDA not available")
-        return
-    
-    device = torch.device('cuda')
-    
-    # 大きなテンソル操作でGPU使用率をテスト
-    print("大きなテンソル操作を実行中...")
-    
-    start_time = time.time()
-    
-    # GPU上で重い計算
-    a = torch.randn(5000, 5000, device=device)
-    b = torch.randn(5000, 5000, device=device)
-    
-    for i in range(10):
-        c = torch.mm(a, b)
-        if i == 0:
-            print(f"First operation result device: {c.device}")
-    
-    end_time = time.time()
-    print(f"GPU計算時間: {end_time - start_time:.2f}秒")
-    
-    # 同じ計算をCPUで実行して比較
-    print("同じ計算をCPUで実行中...")
-    start_time = time.time()
-    
-    a_cpu = torch.randn(5000, 5000)
-    b_cpu = torch.randn(5000, 5000)
-    
-    for i in range(10):
-        c_cpu = torch.mm(a_cpu, b_cpu)
-    
-    end_time = time.time()
-    print(f"CPU計算時間: {end_time - start_time:.2f}秒")
-    
-    # メモリ使用量確認
-    memory_allocated = torch.cuda.memory_allocated(0) / 1024**3
-    memory_reserved = torch.cuda.memory_reserved(0) / 1024**3
-    print(f"テスト後のGPUメモリ - Allocated: {memory_allocated:.2f}GB, Reserved: {memory_reserved:.2f}GB")
-
-def check_dataloader_efficiency(dataloader, device, num_batches=3):
-    """DataLoaderの効率性をチェック"""
-    print(f"\n🔍 DataLoader効率性チェック")
-    print("-"*40)
-    
-    total_load_time = 0
-    total_gpu_transfer_time = 0
-    
-    for batch_idx, (images, targets) in enumerate(dataloader):
-        if batch_idx >= num_batches:
-            break
-        
-        load_start = time.time()
-        
-        # GPU転送時間測定
-        gpu_start = time.time()
-        images = images.to(device, non_blocking=True)
-        torch.cuda.synchronize()  # GPU転送完了を待つ
-        gpu_end = time.time()
-        
-        load_end = time.time()
-        
-        batch_load_time = load_end - load_start
-        gpu_transfer_time = gpu_end - gpu_start
-        
-        total_load_time += batch_load_time
-        total_gpu_transfer_time += gpu_transfer_time
-        
-        print(f"Batch {batch_idx}: Load {batch_load_time:.3f}s, GPU transfer {gpu_transfer_time:.3f}s")
-        print(f"   Images shape: {images.shape}, device: {images.device}")
-    
-    avg_load_time = total_load_time / num_batches
-    avg_gpu_time = total_gpu_transfer_time / num_batches
-    
-    print(f"\n平均読み込み時間: {avg_load_time:.3f}s")
-    print(f"平均GPU転送時間: {avg_gpu_time:.3f}s")
-    
-    if avg_gpu_time > avg_load_time * 0.5:
-        print("⚠️ GPU転送が遅い可能性があります")
-        print("   対策: pin_memory=True, non_blocking=True を試してください")
-
-def monitor_training_step(model, images, targets, criterion, optimizer, device):
-    """1ステップの学習をモニタリング"""
-    print(f"\n🔍 学習ステップモニタリング")
-    print("-"*40)
-    
-    # 開始時のGPUメモリ
-    start_memory = torch.cuda.memory_allocated(0) / 1024**3
-    
-    # Forward pass
-    forward_start = time.time()
-    predictions, grid_size = model(images)
-    torch.cuda.synchronize()
-    forward_end = time.time()
-    
-    forward_memory = torch.cuda.memory_allocated(0) / 1024**3
-    
-    # Loss計算
-    loss_start = time.time()
-    loss = criterion(predictions, targets, grid_size)
-    torch.cuda.synchronize()
-    loss_end = time.time()
-    
-    loss_memory = torch.cuda.memory_allocated(0) / 1024**3
-    
-    # Backward pass
-    backward_start = time.time()
-    optimizer.zero_grad()
-    loss.backward()
-    torch.cuda.synchronize()
-    backward_end = time.time()
-    
-    backward_memory = torch.cuda.memory_allocated(0) / 1024**3
-    
-    # Optimizer step
-    step_start = time.time()
-    optimizer.step()
-    torch.cuda.synchronize()
-    step_end = time.time()
-    
-    final_memory = torch.cuda.memory_allocated(0) / 1024**3
-    
-    print(f"Forward pass: {forward_end - forward_start:.3f}s (+{forward_memory - start_memory:.2f}GB)")
-    print(f"Loss calculation: {loss_end - loss_start:.3f}s (+{loss_memory - forward_memory:.2f}GB)")
-    print(f"Backward pass: {backward_end - backward_start:.3f}s (+{backward_memory - loss_memory:.2f}GB)")
-    print(f"Optimizer step: {step_end - step_start:.3f}s (+{final_memory - backward_memory:.2f}GB)")
-    print(f"Total memory used: {final_memory:.2f}GB")
-    
-    # 予測とターゲットのデバイス確認
-    print(f"Predictions device: {predictions.device}")
-    print(f"Loss device: {loss.device}")
-
-# train.py のmain関数に追加する関数
-def debug_training_setup(model, dataloader, criterion, optimizer, device):
-    """学習セットアップの完全デバッグ"""
-    print("\n🚀 学習セットアップ完全デバッグ")
-    print("="*60)
-    
-    # 1. 環境チェック
-    if not comprehensive_gpu_check():
-        return False
-    
-    # 2. モデルチェック
-    if not check_model_device(model):
-        print("🔧 モデルをGPUに移動しています...")
-        model = model.to(device)
-        check_model_device(model)
-    
-    # 3. GPU使用率テスト
-    gpu_utilization_test()
-    
-    # 4. DataLoaderチェック
-    check_dataloader_efficiency(dataloader, device)
-    
-    # 5. 実際の学習ステップをテスト
-    print("\n🔍 実際の学習ステップをテスト中...")
-    model.train()
-    
-    for batch_idx, (images, targets) in enumerate(dataloader):
-        # データをGPUに移動
-        images = images.to(device, non_blocking=True)
-        
-        # データデバイス確認
-        if not check_data_device(images, targets):
-            print("🔧 データをGPUに移動しています...")
-            images = images.to(device)
-        
-        # 1ステップをモニタリング
-        monitor_training_step(model, images, targets, criterion, optimizer, device)
-        
-        print("✅ デバッグ完了 - 学習を開始します")
-        break
-    
-    return True
-
-
+# ===== メイン関数 =====
 def main():
-    print("🚀 Starting Modular YOLO Training")
+    print("🚀 Starting Modular YOLO Training - Phase 3 Complete")
     
     # プロジェクト全体のバージョン情報を表示
     print("\n" + "="*80)
@@ -359,32 +634,20 @@ def main():
     print(f"   Batch size: {cfg.batch_size}")
     print(f"   Image size: {cfg.img_size}")
     print(f"   Classes: {cfg.num_classes}")
+    print(f"   EMA: {cfg.use_ema}")
+    print(f"   Validation Split: {cfg.validation_split}")
     
-    # ★★★ データセット（GPU最適化） ★★★
-    print("\n📊 Loading dataset...")
-    dataset = FLIRDataset(cfg.train_img_dir, cfg.train_label_dir, cfg.img_size)
+    # ★★★ Phase 3: データセット & 検証分割 ★★★
+    print("\n📊 Loading dataset with validation split...")
+    train_dataloader, val_dataloader = setup_dataloaders(cfg)
     
-    # DataLoader設定をGPU最適化
-    num_workers = 2 if cfg.device.type == 'cuda' else 0
-    pin_memory = cfg.device.type == 'cuda'
-    
-    dataloader = DataLoader(
-        dataset, 
-        batch_size=cfg.batch_size, 
-        shuffle=True, 
-        collate_fn=collate_fn, 
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=num_workers > 0
-    )
-    
-    print(f"   Dataset: {len(dataset)} images")
-    print(f"   Batches: {len(dataloader)}")
-    print(f"   DataLoader: workers={num_workers}, pin_memory={pin_memory}")
+    print(f"   Total train batches: {len(train_dataloader)}")
+    if val_dataloader:
+        print(f"   Total validation batches: {len(val_dataloader)}")
     
     # ★★★ モデル（明示的にGPUに移動） ★★★
     print("\n🤖 Creating and setting up model...")
-    model = SimpleYOLO(cfg.num_classes)
+    model = SimpleYOLO(cfg.num_classes).to(cfg.device)
     
     # モデルを明示的にGPUに移動
     print(f"   Moving model to {cfg.device}...")
@@ -400,141 +663,60 @@ def main():
     model_device = next(model.parameters()).device
     print(f"   Model device confirmed: {model_device}")
     
-    # ★★★ 損失関数とオプティマイザ ★★★
+    # ★★★ 損失関数 ★★★
     criterion = YOLOLoss(cfg.num_classes)
-    optimizer = optim.Adam(model.parameters(), lr=cfg.learning_rate)
     
-    # ★★★ 学習開始前の包括的デバッグ ★★★
-    if cfg.device.type == 'cuda':
-        print("\n🔍 GPU学習セットアップをデバッグ中...")
-        debug_success = debug_training_setup(model, dataloader, criterion, optimizer, cfg.device)
+    # ★★★ Phase 3 EMA&検証分割学習 または 従来学習 ★★★
+    if cfg.use_phase3_optimization:
+        print("\n🚀 Phase 3 EMA&検証分割学習を開始")
         
-        if not debug_success:
-            print("❌ GPU設定に問題があります。CPU学習に切り替えます。")
-            cfg.device = torch.device('cpu')
-            model = model.to(cfg.device)
-    
-    # ★★★ 最適化された学習ループ ★★★
-    print(f"\n🎯 Starting training on {cfg.device}...")
-    best_loss = float('inf')
-    
-    # 初回GPU使用率確認
-    if cfg.device.type == 'cuda':
-        print("\n📊 初回バッチでGPU使用率確認...")
-    
-    for epoch in range(cfg.num_epochs):
-        start_time = time.time()
-        
-        # 最適化された学習エポック
-        avg_loss = train_one_epoch_optimized(
-            model, dataloader, criterion, optimizer, cfg.device, epoch
+        # Phase 3 完全版学習実行
+        train_losses, val_losses, lrs, best_loss = optimized_training_loop_with_ema_val(
+            model, train_dataloader, val_dataloader, criterion, cfg
         )
         
-        epoch_time = time.time() - start_time
-        print(f"\nEpoch [{epoch+1}/{cfg.num_epochs}] "
-              f"Loss: {avg_loss:.4f} Time: {epoch_time:.1f}s")
+        # 結果可視化
+        try:
+            plot_training_progress(train_losses, lrs, val_losses)
+        except Exception as e:
+            print(f"⚠️ 可視化エラー: {e}")
         
-        # GPU使用状況表示（最初の3エポックのみ）
-        if cfg.device.type == 'cuda' and epoch < 3:
-            memory_allocated = torch.cuda.memory_allocated(0) / 1024**3
-            memory_reserved = torch.cuda.memory_reserved(0) / 1024**3
-            print(f"   GPU Memory: {memory_allocated:.2f}GB allocated, {memory_reserved:.2f}GB reserved")
+        print(f"\n🎯 Phase 3 EMA&検証分割完了! Best Loss: {best_loss:.4f}")
+        if best_loss < 1.0:
+            print("🎉 Phase 3 目標達成! (Loss < 1.0)")
+        if best_loss < 0.5:
+            print("🏆 最終目標達成! (Loss < 0.5)")
+            
+    else:
+        print("\n📚 従来学習を開始")
         
-        # モデル保存
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            
-            # バージョン情報付きでチェックポイント保存
-            checkpoint = {
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'loss': best_loss,
-                'device': str(cfg.device),
-                'version_info': VersionTracker.get_all_trackers()
-            }
-            
-            torch.save(checkpoint, os.path.join(cfg.save_dir, 'best_model.pth'))
-            print(f"💾 Best model saved (loss: {best_loss:.4f})")
+        # 従来学習ループ（単一データローダー）
+        train_losses, lrs, best_loss = optimized_training_loop(model, train_dataloader, criterion, cfg)
+        
+        # 結果可視化
+        try:
+            plot_training_progress(train_losses, lrs)
+        except Exception as e:
+            print(f"⚠️ 可視化エラー: {e}")
+        
+        print(f"\n✅ 従来学習完了! Best Loss: {best_loss:.4f}")
     
     print("\n✅ Training completed!")
     
-    # 最終GPU統計
+    # 最終統計
     if cfg.device.type == 'cuda':
         final_memory = torch.cuda.memory_allocated(0) / 1024**3
         max_memory = torch.cuda.max_memory_allocated(0) / 1024**3
         print(f"📊 最終GPU統計:")
         print(f"   現在のメモリ使用量: {final_memory:.2f}GB")
         print(f"   最大メモリ使用量: {max_memory:.2f}GB")
-
-def train_one_epoch_optimized(model, dataloader, criterion, optimizer, device, epoch):
-    """GPU最適化された学習エポック"""
-    model.train()
-    total_loss = 0
-    batch_count = 0
     
-    # エポック開始時の設定
-    if device.type == 'cuda':
-        torch.cuda.empty_cache()  # GPU メモリをクリア
-    
-    for batch_idx, (images, targets) in enumerate(dataloader):
-        batch_start_time = time.time()
-        
-        # ★★★ データを明示的にGPUに移動 ★★★
-        images = images.to(device, non_blocking=True)
-        
-        # targetsがリストの場合の処理
-        if isinstance(targets, list):
-            # リストの各要素をGPUに移動（必要に応じて）
-            pass  # YOLO lossでは通常CPUのまま処理
-        else:
-            targets = targets.to(device, non_blocking=True)
-        
-        # GPU同期（最初のバッチのみ）
-        if batch_idx == 0 and device.type == 'cuda':
-            torch.cuda.synchronize()
-            print(f"   First batch data moved to GPU: images {images.device}, shape {images.shape}")
-        
-        # Forward pass
-        forward_start = time.time()
-        predictions, grid_size = model(images)
-        
-        # 最初のバッチで予測形状確認
-        if batch_idx == 0:
-            print(f"   First batch predictions: shape {predictions.shape}, device {predictions.device}")
-        
-        # Loss calculation
-        loss = criterion(predictions, targets, grid_size)
-        
-        # Backward pass
-        optimizer.zero_grad()
-        loss.backward()
-        
-        # 勾配クリッピング（安定性向上）
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        
-        optimizer.step()
-        
-        total_loss += loss.item()
-        batch_count += 1
-        
-        # バッチ処理時間（最初の数バッチのみ）
-        if batch_idx < 5:
-            batch_time = time.time() - batch_start_time
-            print(f"   Batch {batch_idx}: {batch_time:.3f}s, Loss: {loss.item():.4f}")
-        
-        # 進捗表示
-        if batch_idx % Config.print_interval == 0:
-            current_lr = optimizer.param_groups[0]['lr']
-            print(f"Batch [{batch_idx}/{len(dataloader)}] Loss: {loss.item():.4f} LR: {current_lr:.6f}")
-        
-        # メモリリークチェック（GPU使用時のみ）
-        if device.type == 'cuda' and batch_idx % 100 == 0:
-            current_memory = torch.cuda.memory_allocated(0) / 1024**3
-            if current_memory > 10.0:  # 10GB以上の場合
-                torch.cuda.empty_cache()
-                print(f"   GPU memory cleanup at batch {batch_idx}: {current_memory:.2f}GB")
-    
-    return total_loss / batch_count if batch_count > 0 else 0.0
+    # 学習結果サマリー
+    print(f"\n🎯 学習結果サマリー:")
+    print(f"   最終Loss: {best_loss:.4f}")
+    print(f"   EMA使用: {'Yes' if cfg.use_ema else 'No'}")
+    print(f"   検証分割: {'Yes' if cfg.validation_split > 0 else 'No'}")
+    print(f"   保存先: {cfg.save_dir}")
 
 if __name__ == "__main__":
     main()
