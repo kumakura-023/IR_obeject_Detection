@@ -307,9 +307,10 @@ def test_multiscale_model():
             # Parameter count by component
             backbone_params = sum(p.numel() for p in model.backbone.parameters())
             fpn_params = sum(p.numel() for p in model.fpn.parameters())
-            head_params = sum(p.numel() for p in [model.head_small.parameters(), 
-                                                 model.head_medium.parameters(),
-                                                 model.head_large.parameters()])
+            head_small_params = sum(p.numel() for p in model.head_small.parameters())
+            head_medium_params = sum(p.numel() for p in model.head_medium.parameters())
+            head_large_params = sum(p.numel() for p in model.head_large.parameters())
+            head_params = head_small_params + head_medium_params + head_large_params
             
             print(f"\n📊 パラメータ分布:")
             print(f"   Backbone: {backbone_params:,}")
