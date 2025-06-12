@@ -7,6 +7,14 @@ from sklearn.cluster import KMeans
 from dataset import FLIRDataset
 from config import Config
 
+
+# ★★★ 共有VersionTrackerをインポート ★★★
+from version_tracker import create_version_tracker, VersionTracker
+
+# バージョン管理システム初期化
+loss_version = create_version_tracker("Loss System v1.1", "anchor_generator.py")
+loss_version.add_modification("アンカー生成実装")
+
 def generate_anchors_kmeans(dataset, k=9, img_size=416, sample_limit=1000):
     """
     データセット固有のアンカーをK-means++で生成
