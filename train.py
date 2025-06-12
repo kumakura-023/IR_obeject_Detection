@@ -253,7 +253,7 @@ def phase3_integrated_training_loop(model, train_dataloader, val_dataloader, cri
         
         # 🆕 進捗トラッカー初期化
         from progress import MultiScaleProgressTracker
-        progress_tracker = MultiScaleProgressTracker(len(train_dataloader), print_interval=100)
+        progress_tracker = MultiScaleProgressTracker(len(train_dataloader), print_interval=10)
         progress_tracker.start_epoch(epoch + 1, cfg.num_epochs)
         
         for batch_idx, (images, targets) in enumerate(train_dataloader):
