@@ -5,6 +5,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
+
+# ★★★ 共有VersionTrackerをインポート ★★★
+from version_tracker import create_version_tracker, VersionTracker
+
+# バージョン管理システム初期化
+loss_version = create_version_tracker("Loss System v2.1", "anchor_loss.py")
+loss_version.add_modification("アンカーベースloss実装")
 # Step 1で生成されたアンカー
 ANCHORS = {
     'small':  [(7, 11), (14, 28), (22, 65)],      # 52x52 grid

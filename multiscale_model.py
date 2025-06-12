@@ -4,6 +4,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+# ★★★ 共有VersionTrackerをインポート ★★★
+from version_tracker import create_version_tracker, VersionTracker
+
+# バージョン管理システム初期化
+loss_version = create_version_tracker("Loss System v2.1", "multiscale_model.py")
+loss_version.add_modification("マルチスケール実装")
+
 # Step 1で生成されたアンカーをインポート
 ANCHORS = {
     'small':  [(7, 11), (14, 28), (22, 65)],      # 52x52 grid
