@@ -26,10 +26,11 @@ from version_tracker import (
 )
 
 # バージョン管理システム初期化
-training_version = create_version_tracker("Training System v2.0 - Phase 3 Integrated", "train_phase3_integrated.py")
+training_version = create_version_tracker("Training System v2.2 - Phase 3 Integrated", "train.py")
 training_version.add_modification("Phase 3完全統合: マルチスケール + アンカーベース")
 training_version.add_modification("EMA + 検証分割継続")
 training_version.add_modification("フォールバック機能付き")
+training_version.add_modification("進捗情報追加")
 
 # ===== Phase 3: EMAクラス実装 =====
 class EMAModel:
@@ -250,6 +251,11 @@ def phase3_integrated_training_loop(model, train_dataloader, val_dataloader, cri
         epoch_loss = 0
         batch_count = 0
         
+        # 🆕 進捗トラッカー初期化
+        from progress import MultiScaleProgressTracker
+        progress_tracker = MultiScaleProgressTracker(len(train_dataloader), print_interval=100)
+        progress_tracker.start_epoch(epoch + 1, cfg.num_epochs)
+        
         for batch_idx, (images, targets) in enumerate(train_dataloader):
             images = images.to(cfg.device, non_blocking=True)
             
@@ -257,9 +263,19 @@ def phase3_integrated_training_loop(model, train_dataloader, val_dataloader, cri
             if architecture_type == "multiscale":
                 predictions = model(images)
                 loss = criterion(predictions, targets)
+                
+                # 🆕 マルチスケール詳細情報取得（100バッチごと）
+                scale_losses = None
+                if batch_idx % 100 == 0 and hasattr(criterion, 'return_components'):
+                    # 詳細情報付きで再計算
+                    criterion.return_components = True
+                    _, _, scale_losses = criterion(predictions, targets)
+                    criterion.return_components = False
+                
             else:
                 predictions, grid_size = model(images)
                 loss = criterion(predictions, targets, grid_size)
+                scale_losses = None
             
             # Backward
             optimizer.zero_grad()
@@ -274,12 +290,14 @@ def phase3_integrated_training_loop(model, train_dataloader, val_dataloader, cri
             epoch_loss += loss.item()
             batch_count += 1
             
-            # バッチログ
-            if batch_idx % 100 == 0:
-                current_lr = optimizer.param_groups[0]['lr']
-                avg_loss = epoch_loss / (batch_idx + 1)
-                print(f"   Batch [{batch_idx:4d}] Loss: {loss.item():8.4f} "
-                      f"AvgLoss: {avg_loss:8.4f} LR: {current_lr:.6f}")
+            # 🆕 詳細進捗表示（100バッチごと）
+            current_lr = optimizer.param_groups[0]['lr']
+            if architecture_type == "multiscale" and scale_losses:
+                progress_tracker.update_batch_multiscale(
+                    batch_idx, loss.item(), current_lr, scale_losses
+                )
+            else:
+                progress_tracker.update_batch(batch_idx, loss.item(), current_lr)
         
         avg_train_loss = epoch_loss / batch_count
         
