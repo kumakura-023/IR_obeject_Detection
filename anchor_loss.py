@@ -10,8 +10,9 @@ import numpy as np
 from version_tracker import create_version_tracker, VersionTracker
 
 # バージョン管理システム初期化
-loss_version = create_version_tracker("Loss System v2.1", "anchor_loss.py")
+loss_version = create_version_tracker("Loss System v2.2", "anchor_loss.py")
 loss_version.add_modification("アンカーベースloss実装")
+loss_version.add_modification("tensorで返すように変更")
 # Step 1で生成されたアンカー
 ANCHORS = {
     'small':  [(7, 11), (14, 28), (22, 65)],      # 52x52 grid
@@ -329,7 +330,7 @@ class MultiScaleAnchorLoss(nn.Module):
         # Final loss
         loss_components['total_loss'] = total_loss.item()
         
-        return total_loss, loss_components, scale_losses
+        return total_loss
 
 def test_anchor_loss():
     """Test the anchor-based loss function"""
