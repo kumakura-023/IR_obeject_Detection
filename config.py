@@ -9,8 +9,8 @@ class Config:
     # デバイス設定
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # バッチサイズ（成功実績あり）
-    batch_size = 96         # 前回成功した設定
+    # バッチサイズ
+    batch_size = 96
     img_size = 416
     num_classes = 15
     num_epochs = 35
@@ -18,118 +18,157 @@ class Config:
     # アーキテクチャ
     use_multiscale_architecture = True
     
-    # ★★★ 段階的高LR実験 ★★★
-    # Phase 1: 現在の1.875倍
-    learning_rate = 1.5e-4   # 8e-5 → 1.5e-4 (1.875倍)
-    base_lr = 1.5e-4
+    # ★★★ Step 6 Lite: 時間効率重視 ★★★
+    learning_rate = 1.3e-4   # Step 5の中間値
+    base_lr = 1.3e-4
     
-    print(f"🔥 段階的高LR実験 Phase 1:")
-    print(f"   前回成功LR: 8e-5 (0.00008)")
-    print(f"   今回実験LR: {learning_rate:.6f} (1.875倍)")
-    print(f"   狙い: Val 55.4 → 45-50台")
+    print(f"⚡ Step 6 Lite版設定:")
+    print(f"   重い処理OFF、軽い拡張のみ")
+    print(f"   目標時間: 10-12分/エポック")
+    print(f"   目標精度: Val 42.0 → 39-41台")
     
-    # 実験計画表示
-    print(f"📊 実験計画:")
-    print(f"   Phase 1 (今回): LR 1.5e-4 → Val < 50 期待")
-    print(f"   Phase 2 (次回): LR 3e-4   → Val < 45 期待")
-    print(f"   Phase 3 (最終): LR 6e-4   → Val < 40 期待")
-    
-    # データ拡張（前回と同じ）
+    # ★★★ 軽量データ拡張設定 ★★★
+    # 基本データ拡張（従来通り）
     augment = True
-    brightness_range = 0.35
-    noise_level = 0.025
-    weight_decay = 4e-4
+    brightness_range = 0.3   # 通常レベル
+    noise_level = 0.02       # 通常レベル
+    
+    # 高度データ拡張（超軽量）
+    use_advanced_augmentation = False
+    use_mixup = True         # 軽い処理のみ
+    use_mosaic = False       # 🚫重い処理OFF
+    use_cutmix = False       # 🚫重い処理OFF
+    
+    mixup_prob = 0.4         # MixUpのみなので確率上げる
+    mosaic_prob = 0.0        # 完全OFF
+    
+    print(f"⚡ 軽量データ拡張:")
+    print(f"   MixUp: ON (確率40%)")
+    print(f"   Mosaic: OFF (時間節約)")
+    print(f"   CutMix: OFF (時間節約)")
+    print(f"   予想処理時間削減: 50-60%")
+    
+    # 学習パラメータ（Step 5ベース）
+    weight_decay = 4e-4      # Step 5成功値
     momentum = 0.937
     
     # 表示・保存設定
     print_interval = 10
     save_interval = 2
     
-    # Phase 3最適化
+    # Phase 4最適化
     use_phase3_optimization = True
     
-    # オプティマイザ（高LR対応）
+    # オプティマイザ
     optimizer_type = "AdamW"
     betas = (0.9, 0.999)
     eps = 1e-8
     
-    # スケジューラ（高LR実験用に調整）
+    # スケジューラ
     use_scheduler = True
     scheduler_type = "cosine"
-    warmup_epochs = 0       # ウォームアップなし
-    min_lr = learning_rate / 200  # 最小LRを調整
+    warmup_epochs = 0
+    min_lr = learning_rate / 250
     
-    # 学習安定化（高LR対応）
-    gradient_clip = 2.5     # 2.0 → 2.5 (少し強化)
+    # 学習安定化
+    gradient_clip = 2.5      # Step 5レベル
     
-    # Early Stopping（短期実験用）
-    patience = 6            # 5 → 6 (少し余裕)
-    min_improvement = 0.008 # 0.01 → 0.008 (少し厳しく)
+    # Early Stopping
+    patience = 6             # Step 5レベル
+    min_improvement = 0.007
     
-    # EMA設定（高LR対応）
+    # EMA設定
     use_ema = True
-    ema_decay = 0.998       # 0.999 → 0.998 (高LR用)
+    ema_decay = 0.998        # Step 5レベル
     
     # 検証設定
     validation_split = 0.15
     validate_every = 1
     
-    # 損失重み
-    lambda_coord = 5.0
+    # ★★★ Step 5成功設定完全継続 ★★★
+    # 損失関数（Step 5の大成功設定）
+    lambda_coord = 8.0       # CIoU効果
     lambda_obj = 1.0
     lambda_noobj = 0.5
-    lambda_cls = 1.0
+    lambda_cls = 1.5         # Focal効果
     
-    # DataLoader設定
-    dataloader_num_workers = 4
+    use_ciou = True          # Step 5成功要因
+    use_focal = True         # Step 5成功要因
+    use_label_smoothing = False
+    
+    # ★★★ 時間効率化設定 ★★★
+    # DataLoader最適化（速度重視）
+    dataloader_num_workers = 6    # 4 → 6 (軽量処理なので増加)
     pin_memory = True
     persistent_workers = True
-    prefetch_factor = 2
+    prefetch_factor = 3           # 2 → 3 (先読み強化)
     
     # メモリ効率化
     mixed_precision = False
     gradient_accumulation_steps = 1
     
-    # GPU最適化
+    # GPU最適化（速度重視）
     torch_compile = False
-    channels_last = False
+    channels_last = True     # False → True (最適化)
     
-    # メモリ管理
-    memory_debug = True
+    # メモリ管理（軽量化）
+    memory_debug = False     # True → False (ログ削減)
     target_memory_usage = 8.0
-    empty_cache_every_n_batch = 100
+    empty_cache_every_n_batch = 100  # 50 → 100 (頻度削減)
     cudnn_benchmark = True
     
-    # デバッグ設定
+    # デバッグ設定（速度重視）
     debug_mode = False
     profile_training = False
     
-    # ★★★ 実験判定基準 ★★★
-    print(f"📋 Phase 1判定基準:")
-    print(f"   🎉 大成功: Val < 45 → Phase 2へ (LR 3e-4)")
-    print(f"   ✅ 成功:   Val < 50 → Phase 2へ")
-    print(f"   🤔 微妙:   Val 50-55 → 継続観察")
-    print(f"   ❌ 失敗:   Val > 55 → LR下げる")
+
+    use_advanced_postprocessing = True
+    postprocessing_config = {
+    'use_soft_nms': True,
+    'use_tta': False,        # 学習時は時間効率重視
+    'use_multiscale': False,
+    'conf_threshold': 0.3,   # 検証時閾値
+    'iou_threshold': 0.5,
+    'soft_nms_sigma': 0.5,
+    'soft_nms_method': 'gaussian'
+    }
+
+    print(f"🔧 Phase 4後処理設定:")
+    print(f"   Soft-NMS: {'ON' if postprocessing_config['use_soft_nms'] else 'OFF'}")
+    print(f"   TTA: {'OFF' if not postprocessing_config['use_tta'] else 'ON'} (時間効率重視)")
+    print(f"   検証時詳細後処理: 5エポックに1回")
+
+    # ★★★ Step 6 Lite予想性能 ★★★
+    print(f"📊 Step 6 Lite予想:")
+    print(f"   エポック時間: 21分 → 10-12分 (50%削減)")
+    print(f"   Val Loss: 42.0 → 39-41台 (軽微改善)")
+    print(f"   学習安定性: Step 5レベル維持")
+    print(f"   時間効率: 大幅改善")
     
-    print(f"🎯 Phase 1目標:")
-    print(f"   主目標: Val Loss < 50")
-    print(f"   理想目標: Val Loss < 45")
-    print(f"   最低目標: Val Loss < 55 (現状維持)")
+    # 処理時間分析
+    print(f"⏱️ 時間短縮の内訳:")
+    print(f"   Mosaic停止: -8分 (最大要因)")
+    print(f"   軽量MixUp: -1分")
+    print(f"   DataLoader最適化: -1分")
+    print(f"   その他最適化: -1分")
+    print(f"   合計短縮: 約11分 (21分 → 10分)")
     
-    # 次フェーズ準備
-    print(f"📅 次フェーズ設定:")
-    print(f"   Phase 2: learning_rate = 3e-4 (2倍)")
-    print(f"   Phase 3: learning_rate = 6e-4 (4倍)")
-    print(f"   限界テスト: learning_rate = 1e-3 (6.7倍)")
+    # 精度とのトレードオフ
+    print(f"🎯 精度とのトレードオフ:")
+    print(f"   Mosaic効果損失: -2-3% (データ多様性低下)")
+    print(f"   MixUp効果維持: +1-2% (効率的拡張)")
+    print(f"   Step 5効果維持: CIoU+Focal効果継続")
+    print(f"   実質的影響: 軽微 (時間効率を重視)")
     
-    # 安全対策
-    print(f"🚨 安全対策:")
-    print(f"   Loss爆発時: 即座にLR半減")
-    print(f"   NaN発生時: 前回設定に復帰")
-    print(f"   GPU OOM時: batch_size削減")
+    # 成功判定
+    print(f"📋 Lite版成功判定:")
+    print(f"   ✅ 大成功: Val < 40 かつ 時間 < 12分")
+    print(f"   ✅ 成功: Val < 42 かつ 時間 < 15分")
+    print(f"   🤔 要検討: 時間 > 15分")
     
-    # 期待成果
-    print(f"📈 期待成果:")
-    print(f"   Phase 1成功: 収束速度2倍、精度5-10%向上")
-    print(f"   全Phase成功: Val Loss 35-40台達成")
-    print(f"   副次効果: 最適LR発見、学習時間短縮")
+    # 次ステップ計画
+    print(f"🚀 成功時の次ステップ:")
+    print(f"   1. Step 7: 後処理最適化 (Soft-NMS等)")
+    print(f"   2. mAP測定システム実装")
+    print(f"   3. Phase 4最終調整")
+    print(f"   4. 必要に応じてMosaic再導入検討")

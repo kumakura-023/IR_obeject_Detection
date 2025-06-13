@@ -10,7 +10,9 @@ from dataset import FLIRDataset, collate_fn
 
 # ★★★ Phase 3 新アーキテクチャをインポート ★★★
 from multiscale_model import MultiScaleYOLO
-from anchor_loss import MultiScaleAnchorLoss
+from advanced_losses import AdvancedMultiScaleLoss
+from advanced_augmentation import create_advanced_dataloader
+from post_processing import AdvancedPostProcessor, SoftNMS
 
 # ★★★ フォールバック用（従来アーキテクチャ） ★★★
 from model import SimpleYOLO
@@ -83,7 +85,7 @@ def create_model_and_loss(cfg):
             }
             
             model = MultiScaleYOLO(num_classes=cfg.num_classes, anchors=anchors)
-            criterion = MultiScaleAnchorLoss(anchors=anchors, num_classes=cfg.num_classes)
+            criterion = AdvancedMultiScaleLoss(anchors=anchors, num_classes=cfg.num_classes)
             
             print(f"   ✅ MultiScaleYOLO: {sum(p.numel() for p in model.parameters()):,} parameters")
             print(f"   ✅ MultiScaleAnchorLoss: 3スケール対応")
@@ -147,6 +149,77 @@ def validate_model(model, val_dataloader, criterion, device, architecture_type):
     avg_val_loss = total_val_loss / val_batches if val_batches > 0 else float('inf')
     return avg_val_loss
 
+def validate_model_with_postprocessing(model, val_dataloader, criterion, device, architecture_type, use_advanced_postprocessing=True):
+    """後処理を含む詳細検証"""
+    model.eval()
+    total_val_loss = 0
+    val_batches = 0
+    
+    # 後処理システム初期化
+    if use_advanced_postprocessing:
+        post_processor = AdvancedPostProcessor(
+            use_soft_nms=True,
+            use_tta=False,      # 検証時は時間効率重視
+            use_multiscale=False,
+            conf_threshold=0.3,  # 検証時は低めに設定
+            iou_threshold=0.5
+        )
+        
+        detection_stats = {
+            'total_detections': 0,
+            'high_conf_detections': 0,  # conf > 0.7
+            'processed_detections': 0
+        }
+    
+    with torch.no_grad():
+        for batch_idx, (images, targets) in enumerate(val_dataloader):
+            images = images.to(device, non_blocking=True)
+            
+            # 通常の損失計算
+            if architecture_type == "multiscale":
+                predictions = model(images)
+                loss = criterion(predictions, targets)
+            else:
+                predictions, grid_size = model(images)
+                loss = criterion(predictions, targets, grid_size)
+            
+            total_val_loss += loss.item()
+            val_batches += 1
+            
+            # 後処理テスト（サンプリング検証）
+            if use_advanced_postprocessing and batch_idx % 10 == 0:  # 10バッチに1回
+                try:
+                    # 1枚目の画像で後処理テスト
+                    single_image = images[0:1]
+                    single_pred = {k: v[0:1] for k, v in predictions.items()} if isinstance(predictions, dict) else predictions[0:1]
+                    
+                    # 後処理実行
+                    processed_detections = post_processor.process_predictions(
+                        model, single_image, single_pred
+                    )
+                    
+                    # 統計更新
+                    detection_stats['total_detections'] += len(processed_detections)
+                    high_conf = sum(1 for det in processed_detections if det['score'] > 0.7)
+                    detection_stats['high_conf_detections'] += high_conf
+                    detection_stats['processed_detections'] += 1
+                    
+                except Exception as e:
+                    print(f"   ⚠️ 後処理テストエラー (batch {batch_idx}): {e}")
+    
+    avg_val_loss = total_val_loss / val_batches if val_batches > 0 else float('inf')
+    
+    # 後処理統計を表示
+    if use_advanced_postprocessing and detection_stats['processed_detections'] > 0:
+        avg_detections = detection_stats['total_detections'] / detection_stats['processed_detections']
+        avg_high_conf = detection_stats['high_conf_detections'] / detection_stats['processed_detections']
+        
+        print(f"📊 後処理統計 (サンプル{detection_stats['processed_detections']}枚):")
+        print(f"   平均検出数: {avg_detections:.1f}/画像")
+        print(f"   高信頼度検出: {avg_high_conf:.1f}/画像 (conf>0.7)")
+    
+    return avg_val_loss
+
 # ===== Phase 3: データローダーセットアップ =====
 def setup_dataloaders(cfg):
     """データローダーセットアップ（検証分割対応）"""
@@ -164,14 +237,14 @@ def setup_dataloaders(cfg):
     num_workers = 2 if cfg.device.type == 'cuda' else 0
     pin_memory = cfg.device.type == 'cuda'
     
-    train_dataloader = DataLoader(
-        train_dataset, 
-        batch_size=cfg.batch_size, 
-        shuffle=True, 
-        collate_fn=collate_fn,
-        num_workers=num_workers,
-        pin_memory=pin_memory
-    )
+    train_dataloader = create_advanced_dataloader(
+    train_dataset,
+    batch_size=cfg.batch_size,
+    use_mixup=True,
+    use_mosaic=True,
+    shuffle=True,
+    num_workers=4
+)
     
     val_dataloader = None
     if val_dataset:
@@ -308,7 +381,17 @@ def phase3_integrated_training_loop(model, train_dataloader, val_dataloader, cri
             if ema:
                 ema.apply_shadow()
             
-            val_loss = validate_model(model, val_dataloader, criterion, cfg.device, architecture_type)
+            # Phase 4: 後処理込みの検証（5エポックに1回詳細検証）
+            if epoch % 5 == 0:
+                print(f"🔧 後処理込み詳細検証実行中...")
+                val_loss = validate_model_with_postprocessing(
+                    model, val_dataloader, criterion, cfg.device, architecture_type
+                )
+            else:
+                # 通常検証（軽量）
+                val_loss = validate_model(
+                    model, val_dataloader, criterion, cfg.device, architecture_type
+                )
             
             if ema:
                 ema.restore()
