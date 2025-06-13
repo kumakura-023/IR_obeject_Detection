@@ -6,6 +6,14 @@ import torch.nn.functional as F
 import math
 import numpy as np
 
+
+# ★★★ 共有VersionTrackerをインポート ★★★
+from version_tracker import create_version_tracker, VersionTracker
+
+# バージョン管理システム初期化
+loss_version = create_version_tracker("Loss System v1.0", "advanced_losses.py")
+loss_version.add_modification("高度loss実装")
+
 class CIoULoss(nn.Module):
     """Complete IoU Loss - 座標回帰の大幅改善"""
     
