@@ -9,169 +9,174 @@ class Config:
     # デバイス設定
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # ★★★ 学習戦略の根本見直し ★★★
-    # 1. 学習率の大胆な調整（8倍増）
-    learning_rate = 5e-4    # 6e-5 → 5e-4 (8倍増)
-    base_lr = 5e-4
-    min_lr = 1e-5           # 最小値も引き上げ
+    # ★★★ 重要決断: マルチスケールを無効化 ★★★
+    # 予測数1,022,112は明らかに異常 → 標準アーキテクチャに戻る
+    use_multiscale_architecture = False  # True → False
     
-    # 2. ウォームアップ追加（重要）
-    warmup_epochs = 3       # 0 → 3（学習初期の安定化）
+    print(f"🏗️ アーキテクチャ修正:")
+    print(f"   マルチスケール: ON → OFF")
+    print(f"   → SimpleYOLO（単一スケール）に切り替え")
+    print(f"   → 予測数を大幅削減")
+    print(f"   → 偽検出爆発を根本解決")
     
-    print(f"🔥 学習戦略改善版設定:")
-    print(f"   学習率: {learning_rate:.0e} (8倍増)")
-    print(f"   ウォームアップ: {warmup_epochs}エポック")
-    print(f"   目標: Val Loss 43.45 → 25-30")
+    # ★★★ 標準的な損失重み（SimpleYOLO用） ★★★
+    lambda_coord = 5.0          # 標準的な値
+    lambda_obj = 1.0            # 標準的な値
+    lambda_noobj = 0.5          # 標準的な値（SimpleYOLOには十分）
+    lambda_cls = 1.0            # 標準的な値
     
-    # バッチサイズ（メモリ効率重視）
-    batch_size = 96         # 安定したサイズ
+    print(f"⚖️ 損失重み正常化:")
+    print(f"   coord=5.0, obj=1.0, noobj=0.5, cls=1.0")
+    print(f"   → 標準的なYOLOバランス")
+    print(f"   → 過度な調整をリセット")
+    
+    # ★★★ 学習率も正常化 ★★★
+    learning_rate = 3e-4        # 2e-4 → 3e-4 (標準的な値に戻す)
+    base_lr = 3e-4
+    min_lr = 1e-5
+    
+    print(f"📈 学習率正常化:")
+    print(f"   3e-4 (標準的な値)")
+    print(f"   → SimpleYOLOに最適化")
+    
+    # ウォームアップ（標準）
+    warmup_epochs = 3
+    
+    # バッチサイズ（維持）
+    batch_size = 96
     img_size = 416
     num_classes = 15
-    num_epochs = 50         # 35 → 50（より長期で様子見）
+    num_epochs = 50
     
-    # アーキテクチャ
-    use_multiscale_architecture = True
-    
-    # ★★★ データ拡張の最適化 ★★★
-    # 重い処理削除、効果的な拡張のみ
+    # ★★★ データ拡張も正常化 ★★★
     augment = True
+    brightness_range = 0.3      # 標準的な値
+    noise_level = 0.02          # 標準的な値
+    contrast_range = 0.3        # 標準的な値
+    gaussian_blur_prob = 0.3    # 標準的な値
     
-    # 基本拡張の強化（サーマル画像特性に最適化）
-    brightness_range = 0.5      # 0.3 → 0.5（サーマル画像の特性）
-    noise_level = 0.03          # 0.02 → 0.03（少し強化）
-    
-    # 新規追加: サーマル画像に有効な拡張
-    contrast_range = 0.4        # 新規: コントラスト調整
-    gaussian_blur_prob = 0.3    # 新規: ガウシアンブラー
-    
-    # 高度データ拡張の見直し
+    # 高度データ拡張（標準）
     use_advanced_augmentation = True
-    use_mixup = True           # 軽くて効果的 → 継続
-    use_mosaic = False         # 重すぎる → OFF
-    use_cutmix = False         # 不要 → OFF
+    use_mixup = True
+    use_mosaic = False          # SimpleYOLOには重すぎる
+    use_cutmix = False
     
-    mixup_prob = 0.6           # 0.4 → 0.6（効果的なので増加）
-    mosaic_prob = 0.0          # 完全OFF
+    mixup_prob = 0.5           # 標準的な値
+    mosaic_prob = 0.0
     
-    print(f"🎨 データ拡張最適化:")
-    print(f"   MixUp強化: 確率60% (効果的)")
-    print(f"   Mosaic停止: 処理時間削減")
-    print(f"   新規拡張: コントラスト・ブラー")
-    print(f"   予想時間削減: 40-50%")
+    print(f"🎨 データ拡張正常化:")
+    print(f"   すべて標準的な値に戻す")
+    print(f"   → SimpleYOLOに最適化")
     
-    # ★★★ 損失関数の重み調整 ★★★
-    lambda_coord = 10.0         # 8.0 → 10.0（座標により注力）
-    lambda_obj = 2.0            # 1.0 → 2.0（物体検出を強化）
-    lambda_noobj = 0.3          # 0.5 → 0.3（背景の重要度下げる）
-    lambda_cls = 1.0            # 1.5 → 1.0（クラス分類は標準）
+    # ★★★ 高度損失関数も無効化 ★★★
+    use_ciou = False            # True → False (SimpleYOLOには複雑すぎる)
+    use_focal = False           # True → False (SimpleYOLOには複雑すぎる)
+    use_label_smoothing = False
     
-    print(f"⚖️ 損失関数重み調整:")
-    print(f"   座標: 8.0 → 10.0 (+25%)")
-    print(f"   物体: 1.0 → 2.0 (2倍)")
-    print(f"   背景: 0.5 → 0.3 (-40%)")
-    print(f"   → 物体検出により注力")
+    print(f"🔧 損失関数簡素化:")
+    print(f"   CIoU: OFF, Focal: OFF")
+    print(f"   → 標準MSE + CrossEntropy")
+    print(f"   → SimpleYOLOに最適化")
     
-    # 高度損失関数設定
-    use_ciou = True             # 継続
-    use_focal = True            # 継続  
-    use_label_smoothing = False # OFFに（過学習対策）
-    
-    # 学習パラメータ調整
-    weight_decay = 2e-4         # 4e-4 → 2e-4（過学習対策）
+    # 学習パラメータ（標準化）
+    weight_decay = 1e-4         # 3e-4 → 1e-4 (標準値)
     momentum = 0.937
     
-    # オプティマイザ
-    optimizer_type = "AdamW"
+    # オプティマイザ（標準）
+    optimizer_type = "Adam"     # AdamW → Adam (SimpleYOLOには十分)
     betas = (0.9, 0.999)
     eps = 1e-8
     
-    # スケジューラ（より緩やかに）
+    # スケジューラ（標準）
     use_scheduler = True
     scheduler_type = "cosine"
     
-    # 学習安定化（より忍耐強く）
-    gradient_clip = 3.0         # 2.5 → 3.0
-    patience = 10               # 6 → 10（より忍耐強く）
-    min_improvement = 0.005     # 0.007 → 0.005（より小さな改善も評価）
+    # 学習安定化（標準）
+    gradient_clip = 5.0         # 1.5 → 5.0 (標準値)
+    patience = 10
+    min_improvement = 0.01      # 0.003 → 0.01 (より緩く)
     
-    # EMA設定（安定化強化）
+    # EMA設定（標準）
     use_ema = True
-    ema_decay = 0.9995          # 0.998 → 0.9995（より安定）
+    ema_decay = 0.999
     
-    # 検証設定
+    # 検証設定（維持）
     validation_split = 0.15
     validate_every = 1
     
-    # DataLoader最適化
-    dataloader_num_workers = 4
-    pin_memory = True
-    persistent_workers = True
+    # DataLoader最適化（維持）
+    dataloader_num_workers = 0
+    pin_memory = False
+    persistent_workers = False
     prefetch_factor = 2
     
-    # メモリ効率化
+    # メモリ効率化（維持）
     mixed_precision = False
     gradient_accumulation_steps = 1
     
-    # GPU最適化
+    # GPU最適化（標準）
     torch_compile = False
-    channels_last = True
+    channels_last = False       # True → False (SimpleYOLOには不要)
     memory_debug = False
     target_memory_usage = 8.0
-    empty_cache_every_n_batch = 50  # 100 → 50（より頻繁に）
+    empty_cache_every_n_batch = 50  # 20 → 50 (標準頻度)
     cudnn_benchmark = True
     
-    # デバッグ設定（診断強化）
-    debug_mode = True           # False → True（問題特定）
-    profile_training = True     # False → True（性能分析）
+    # デバッグ設定（標準）
+    debug_mode = True
+    profile_training = True
     
-    # 表示・保存設定（診断重視）
-    print_interval = 5          # 10 → 5（より詳細に）
-    save_interval = 2
+    # 表示・保存設定（標準）
+    print_interval = 10
+    save_interval = 5
     
-    # ★★★ 診断機能強化 ★★★
-    use_diagnostic_training = True  # 新規追加
-    log_detection_stats = True      # 新規追加
-    save_detection_samples = True   # 新規追加
+    # 診断機能（維持）
+    use_diagnostic_training = True
+    log_detection_stats = True
+    save_detection_samples = True
     
-    # 後処理設定
-    use_advanced_postprocessing = True
+    # 後処理設定（簡素化）
+    use_advanced_postprocessing = False  # True → False (SimpleYOLOには不要)
     postprocessing_config = {
-        'use_soft_nms': True,
-        'use_tta': False,        # 学習時は時間効率重視
+        'use_soft_nms': False,       # 標準NMSで十分
+        'use_tta': False,
         'use_multiscale': False,
-        'conf_threshold': 0.25,  # 0.3 → 0.25（より低い閾値）
+        'conf_threshold': 0.5,       # 0.3 → 0.5 (標準値)
         'iou_threshold': 0.5,
         'soft_nms_sigma': 0.5,
         'soft_nms_method': 'gaussian'
     }
     
-
-    dataloader_num_workers = 0
-    pin_memory = False
-
-
-    print(f"🔧 診断機能強化:")
-    print(f"   詳細ログ: ON")
-    print(f"   検出統計: ON") 
-    print(f"   サンプル保存: ON")
-    print(f"   信頼度閾値: 0.3 → 0.25")
-    
-    # ★★★ 期待される改善効果 ★★★
-    print(f"📊 期待される改善効果:")
-    print(f"   Val Loss: 43.45 → 25-30 (30-40%改善)")
+    # ★★★ 期待される劇的改善 ★★★
+    print(f"📊 期待される劇的改善:")
+    print(f"   予測数: 1,022,112 → 約13,000 (98%削減)")
+    print(f"   完璧信頼度検出: 520 → 10-50 (90%以上削減)")
     print(f"   学習安定性: 大幅向上")
-    print(f"   検出信頼度: 初回の高信頼度検出期待")
-    print(f"   エポック時間: 21分 → 12-15分")
+    print(f"   メモリ使用量: 大幅削減")
+    print(f"   学習速度: 3-5倍高速化")
     
-    # 成功判定基準
-    print(f"✅ 成功判定基準:")
-    print(f"   1. Val Loss < 30.0 (今回目標)")
-    print(f"   2. conf > 0.5 の検出が出現")
-    print(f"   3. Train/Val差 < 2倍")
-    print(f"   4. 学習曲線の安定化")
+    # SimpleYOLO成功判定基準
+    print(f"✅ SimpleYOLO成功判定基準:")
+    print(f"   1. 予測数 < 50,000")
+    print(f"   2. 完璧信頼度検出 < 100")
+    print(f"   3. 平均信頼度 0.1-0.3")
+    print(f"   4. 最大信頼度 < 0.95")
+    print(f"   5. 学習Loss安定下降")
     
-    # 次フェーズ判断
-    print(f"🚀 次フェーズ判断:")
-    print(f"   続行: Val Loss < 30.0")
-    print(f"   方針転換: Val Loss > 35.0のまま")
-    print(f"   緊急見直し: 5エポックで改善なし")
+    # 長期的期待
+    print(f"🎯 SimpleYOLOでの長期期待:")
+    print(f"   Epoch 1-2: 安定した学習")
+    print(f"   Epoch 3-5: 初回の意味ある検出")
+    print(f"   Epoch 10-15: Val Loss < 20")
+    print(f"   Epoch 20-30: 実用的な検出性能")
+    print(f"   Epoch 30-50: Val Loss < 5")
+    
+    # なぜSimpleYOLOが良いか
+    print(f"💡 SimpleYOLOの利点:")
+    print(f"   1. デバッグしやすい（単一スケール）")
+    print(f"   2. 安定した学習（複雑さ最小）")
+    print(f"   3. 高速（予測数少ない）")
+    print(f"   4. 理解しやすい（YOLO原理そのまま）")
+    print(f"   5. 実績ある手法（枯れた技術）")
+    
+    print(f"🚀 まずはSimpleYOLOで基礎を固めよう！")

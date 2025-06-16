@@ -12,4 +12,14 @@
 📈 Epoch [ 4/35] Train: 43.3134 Val: 58.6449 Time: 1154.1s LR: 0.000145
 📈 Epoch [ 5/35] Train: 44.4341 Val: 53.9749 Time: 1139.0s LR: 0.000143
 
-##STEP7
+##new plan phase1
+📈 Epoch [ 1/50] Train: 181.7007 Val: 639.6194 Time: 577.0s LR: 0.000167
+📈 Epoch [ 2/50] Train: 58.1254 Val: 109.5355 Time: 577.8s LR: 0.000333
+📈 Epoch [ 3/50] Train: 45.0301 Val: 65.7153 Time: 573.3s LR: 0.000500
+📈 Epoch [ 4/50] Train: 59.2103 Val: 101.6854 Time: 570.1s LR: 0.000500
+📈 Epoch [ 5/50] Train: 39.9499 Val: 104.5074 Time: 572.4s LR: 0.000498
+📈 Epoch [ 6/50] Train: 40.3992 Val: 72.2179 Time: 572.3s LR: 0.000496
+📈 Epoch [ 7/50] Train: 35.8946 Val: 59.0569 Time: 569.2s LR: 0.000492
+📈 Epoch [ 8/50] Train: 37.5187 Val: 58.5945 Time: 569.7s LR: 0.000488
+
+##new plan pase1 2回目

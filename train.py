@@ -114,7 +114,7 @@ def create_model_and_loss(cfg):
     
     # フォールバック: 従来アーキテクチャ
     print("📚 フォールバック: 従来アーキテクチャを使用")
-    model = SimpleYOLO(cfg.num_classes)
+    model = SimpleYOLO(cfg.num_classes, use_phase2_enhancements=False)
     criterion = YOLOLoss(cfg.num_classes)
     
     print(f"   ✅ SimpleYOLO: {sum(p.numel() for p in model.parameters()):,} parameters")
@@ -964,7 +964,7 @@ def create_model_and_loss(cfg):
     
     # フォールバック: 従来アーキテクチャ
     print("📚 フォールバック: 従来アーキテクチャを使用")
-    model = SimpleYOLO(cfg.num_classes)
+    model = SimpleYOLO(cfg.num_classes, use_phase2_enhancements=False) 
     criterion = YOLOLoss(cfg.num_classes)
     
     print(f"   ✅ SimpleYOLO: {sum(p.numel() for p in model.parameters()):,} parameters")
@@ -1814,7 +1814,7 @@ def create_model_and_loss(cfg):
     
     # フォールバック: 従来アーキテクチャ
     print("📚 フォールバック: 従来アーキテクチャを使用")
-    model = SimpleYOLO(cfg.num_classes)
+    model = SimpleYOLO(cfg.num_classes, use_phase2_enhancements=False)
     criterion = YOLOLoss(cfg.num_classes)
     
     print(f"   ✅ SimpleYOLO: {sum(p.numel() for p in model.parameters()):,} parameters")
