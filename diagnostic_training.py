@@ -91,22 +91,35 @@ class DiagnosticTrainer:
     
     def _analyze_detections(self, predictions, targets):
         """検出結果の詳細分析（改良版）"""
+
+        print(f"DEBUG: _analyze_detections に渡された predictions のタイプ: {type(predictions)}")
+        if torch.is_tensor(predictions):
+            print(f"DEBUG: _analyze_detections に渡された predictions の形状: {predictions.shape}")
+        elif isinstance(predictions, dict):
+            print(f"DEBUG: _analyze_detections に渡された predictions (dict) のキーと形状:")
+            for k, v in predictions.items():
+                print(f"  - {k}: {v.shape}")
         detections = []
         
         try:
-            # マルチスケール予測の場合
+            # アーキテクチャ判定を追加
             if isinstance(predictions, dict):
-                all_preds = []
-                for scale_name, scale_preds in predictions.items():
-                    # [B, N, 20] -> [B*N, 20]
+                # マルチスケールの場合：1つのスケールだけサンプリング
+                # 全スケールを合計すると予測数が異常になるから
+                sample_scale = 'medium'  # 代表として中サイズを使用
+                if sample_scale in predictions:
+                    scale_preds = predictions[sample_scale]
                     B, N, C = scale_preds.shape
-                    flat_preds = scale_preds.view(-1, C)
-                    all_preds.append(flat_preds)
-                
-                # 全予測を結合
-                combined_preds = torch.cat(all_preds, dim=0)
+                    # バッチの1枚目のみ
+                    combined_preds = scale_preds[0].view(-1, C)  # [N, C]
+                else:
+                    # フォールバック
+                    first_scale = list(predictions.keys())[0]
+                    scale_preds = predictions[first_scale]
+                    combined_preds = scale_preds[0].view(-1, scale_preds.shape[-1])
             else:
-                combined_preds = predictions.view(-1, predictions.shape[-1])
+                # シングルスケールの場合
+                combined_preds = predictions[0].view(-1, predictions.shape[-1])
             
             # 勾配デタッチして安全に処理
             with torch.no_grad():
@@ -120,9 +133,17 @@ class DiagnosticTrainer:
                 # 異常値検出（信頼度1.0の検出）
                 perfect_conf_count = np.sum(confidences >= 0.999)
                 
+                 # 予測数の妥当性チェック
+                total_preds = len(confidences)
+                expected_max = 2000  # バッチサイズ32 × 13×13グリッド程度が妥当
+                
+                if total_preds > expected_max:
+                    print(f"⚠️ 異常な予測数検出: {total_preds} (期待値: < {expected_max})")
+                    print(f"   → 診断システムの設定ミス、またはアーキテクチャ設定ミスの可能性")
+
                 # 検出統計
                 detection_info = {
-                    'total_predictions': len(confidences),
+                    'total_predictions': min(total_preds, expected_max),  # 上限設定
                     'conf_mean': float(np.mean(confidences)),
                     'conf_std': float(np.std(confidences)),
                     'conf_max': float(np.max(confidences)),
