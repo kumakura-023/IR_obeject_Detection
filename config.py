@@ -9,166 +9,169 @@ class Config:
     # デバイス設定
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # バッチサイズ
-    batch_size = 96
+    # ★★★ 学習戦略の根本見直し ★★★
+    # 1. 学習率の大胆な調整（8倍増）
+    learning_rate = 5e-4    # 6e-5 → 5e-4 (8倍増)
+    base_lr = 5e-4
+    min_lr = 1e-5           # 最小値も引き上げ
+    
+    # 2. ウォームアップ追加（重要）
+    warmup_epochs = 3       # 0 → 3（学習初期の安定化）
+    
+    print(f"🔥 学習戦略改善版設定:")
+    print(f"   学習率: {learning_rate:.0e} (8倍増)")
+    print(f"   ウォームアップ: {warmup_epochs}エポック")
+    print(f"   目標: Val Loss 43.45 → 25-30")
+    
+    # バッチサイズ（メモリ効率重視）
+    batch_size = 96         # 安定したサイズ
     img_size = 416
     num_classes = 15
-    num_epochs = 35
+    num_epochs = 50         # 35 → 50（より長期で様子見）
     
     # アーキテクチャ
     use_multiscale_architecture = True
     
-    # ★★★ Step 6 Lite: 時間効率重視 ★★★
-    learning_rate = 1.3e-4   # Step 5の中間値
-    base_lr = 1.3e-4
-    
-    print(f"⚡ Step 6 Lite版設定:")
-    print(f"   重い処理OFF、軽い拡張のみ")
-    print(f"   目標時間: 10-12分/エポック")
-    print(f"   目標精度: Val 42.0 → 39-41台")
-    
-    # ★★★ 軽量データ拡張設定 ★★★
-    # 基本データ拡張（従来通り）
+    # ★★★ データ拡張の最適化 ★★★
+    # 重い処理削除、効果的な拡張のみ
     augment = True
-    brightness_range = 0.3   # 通常レベル
-    noise_level = 0.02       # 通常レベル
     
-    # 高度データ拡張（超軽量）
-    use_advanced_augmentation = False
-    use_mixup = True         # 軽い処理のみ
-    use_mosaic = False       # 🚫重い処理OFF
-    use_cutmix = False       # 🚫重い処理OFF
+    # 基本拡張の強化（サーマル画像特性に最適化）
+    brightness_range = 0.5      # 0.3 → 0.5（サーマル画像の特性）
+    noise_level = 0.03          # 0.02 → 0.03（少し強化）
     
-    mixup_prob = 0.4         # MixUpのみなので確率上げる
-    mosaic_prob = 0.0        # 完全OFF
+    # 新規追加: サーマル画像に有効な拡張
+    contrast_range = 0.4        # 新規: コントラスト調整
+    gaussian_blur_prob = 0.3    # 新規: ガウシアンブラー
     
-    print(f"⚡ 軽量データ拡張:")
-    print(f"   MixUp: ON (確率40%)")
-    print(f"   Mosaic: OFF (時間節約)")
-    print(f"   CutMix: OFF (時間節約)")
-    print(f"   予想処理時間削減: 50-60%")
+    # 高度データ拡張の見直し
+    use_advanced_augmentation = True
+    use_mixup = True           # 軽くて効果的 → 継続
+    use_mosaic = False         # 重すぎる → OFF
+    use_cutmix = False         # 不要 → OFF
     
-    # 学習パラメータ（Step 5ベース）
-    weight_decay = 4e-4      # Step 5成功値
+    mixup_prob = 0.6           # 0.4 → 0.6（効果的なので増加）
+    mosaic_prob = 0.0          # 完全OFF
+    
+    print(f"🎨 データ拡張最適化:")
+    print(f"   MixUp強化: 確率60% (効果的)")
+    print(f"   Mosaic停止: 処理時間削減")
+    print(f"   新規拡張: コントラスト・ブラー")
+    print(f"   予想時間削減: 40-50%")
+    
+    # ★★★ 損失関数の重み調整 ★★★
+    lambda_coord = 10.0         # 8.0 → 10.0（座標により注力）
+    lambda_obj = 2.0            # 1.0 → 2.0（物体検出を強化）
+    lambda_noobj = 0.3          # 0.5 → 0.3（背景の重要度下げる）
+    lambda_cls = 1.0            # 1.5 → 1.0（クラス分類は標準）
+    
+    print(f"⚖️ 損失関数重み調整:")
+    print(f"   座標: 8.0 → 10.0 (+25%)")
+    print(f"   物体: 1.0 → 2.0 (2倍)")
+    print(f"   背景: 0.5 → 0.3 (-40%)")
+    print(f"   → 物体検出により注力")
+    
+    # 高度損失関数設定
+    use_ciou = True             # 継続
+    use_focal = True            # 継続  
+    use_label_smoothing = False # OFFに（過学習対策）
+    
+    # 学習パラメータ調整
+    weight_decay = 2e-4         # 4e-4 → 2e-4（過学習対策）
     momentum = 0.937
-    
-    # 表示・保存設定
-    print_interval = 10
-    save_interval = 2
-    
-    # Phase 4最適化
-    use_phase3_optimization = True
     
     # オプティマイザ
     optimizer_type = "AdamW"
     betas = (0.9, 0.999)
     eps = 1e-8
     
-    # スケジューラ
+    # スケジューラ（より緩やかに）
     use_scheduler = True
     scheduler_type = "cosine"
-    warmup_epochs = 0
-    min_lr = learning_rate / 250
     
-    # 学習安定化
-    gradient_clip = 2.5      # Step 5レベル
+    # 学習安定化（より忍耐強く）
+    gradient_clip = 3.0         # 2.5 → 3.0
+    patience = 10               # 6 → 10（より忍耐強く）
+    min_improvement = 0.005     # 0.007 → 0.005（より小さな改善も評価）
     
-    # Early Stopping
-    patience = 6             # Step 5レベル
-    min_improvement = 0.007
-    
-    # EMA設定
+    # EMA設定（安定化強化）
     use_ema = True
-    ema_decay = 0.998        # Step 5レベル
+    ema_decay = 0.9995          # 0.998 → 0.9995（より安定）
     
     # 検証設定
     validation_split = 0.15
     validate_every = 1
     
-    # ★★★ Step 5成功設定完全継続 ★★★
-    # 損失関数（Step 5の大成功設定）
-    lambda_coord = 8.0       # CIoU効果
-    lambda_obj = 1.0
-    lambda_noobj = 0.5
-    lambda_cls = 1.5         # Focal効果
-    
-    use_ciou = True          # Step 5成功要因
-    use_focal = True         # Step 5成功要因
-    use_label_smoothing = False
-    
-    # ★★★ 時間効率化設定 ★★★
-    # DataLoader最適化（速度重視）
-    dataloader_num_workers = 6    # 4 → 6 (軽量処理なので増加)
+    # DataLoader最適化
+    dataloader_num_workers = 4
     pin_memory = True
     persistent_workers = True
-    prefetch_factor = 3           # 2 → 3 (先読み強化)
+    prefetch_factor = 2
     
     # メモリ効率化
     mixed_precision = False
     gradient_accumulation_steps = 1
     
-    # GPU最適化（速度重視）
+    # GPU最適化
     torch_compile = False
-    channels_last = True     # False → True (最適化)
-    
-    # メモリ管理（軽量化）
-    memory_debug = False     # True → False (ログ削減)
+    channels_last = True
+    memory_debug = False
     target_memory_usage = 8.0
-    empty_cache_every_n_batch = 100  # 50 → 100 (頻度削減)
+    empty_cache_every_n_batch = 50  # 100 → 50（より頻繁に）
     cudnn_benchmark = True
     
-    # デバッグ設定（速度重視）
-    debug_mode = False
-    profile_training = False
+    # デバッグ設定（診断強化）
+    debug_mode = True           # False → True（問題特定）
+    profile_training = True     # False → True（性能分析）
     
-
+    # 表示・保存設定（診断重視）
+    print_interval = 5          # 10 → 5（より詳細に）
+    save_interval = 2
+    
+    # ★★★ 診断機能強化 ★★★
+    use_diagnostic_training = True  # 新規追加
+    log_detection_stats = True      # 新規追加
+    save_detection_samples = True   # 新規追加
+    
+    # 後処理設定
     use_advanced_postprocessing = True
     postprocessing_config = {
-    'use_soft_nms': True,
-    'use_tta': False,        # 学習時は時間効率重視
-    'use_multiscale': False,
-    'conf_threshold': 0.3,   # 検証時閾値
-    'iou_threshold': 0.5,
-    'soft_nms_sigma': 0.5,
-    'soft_nms_method': 'gaussian'
+        'use_soft_nms': True,
+        'use_tta': False,        # 学習時は時間効率重視
+        'use_multiscale': False,
+        'conf_threshold': 0.25,  # 0.3 → 0.25（より低い閾値）
+        'iou_threshold': 0.5,
+        'soft_nms_sigma': 0.5,
+        'soft_nms_method': 'gaussian'
     }
+    
 
-    print(f"🔧 Phase 4後処理設定:")
-    print(f"   Soft-NMS: {'ON' if postprocessing_config['use_soft_nms'] else 'OFF'}")
-    print(f"   TTA: {'OFF' if not postprocessing_config['use_tta'] else 'ON'} (時間効率重視)")
-    print(f"   検証時詳細後処理: 5エポックに1回")
+    dataloader_num_workers = 0
+    pin_memory = False
 
-    # ★★★ Step 6 Lite予想性能 ★★★
-    print(f"📊 Step 6 Lite予想:")
-    print(f"   エポック時間: 21分 → 10-12分 (50%削減)")
-    print(f"   Val Loss: 42.0 → 39-41台 (軽微改善)")
-    print(f"   学習安定性: Step 5レベル維持")
-    print(f"   時間効率: 大幅改善")
+
+    print(f"🔧 診断機能強化:")
+    print(f"   詳細ログ: ON")
+    print(f"   検出統計: ON") 
+    print(f"   サンプル保存: ON")
+    print(f"   信頼度閾値: 0.3 → 0.25")
     
-    # 処理時間分析
-    print(f"⏱️ 時間短縮の内訳:")
-    print(f"   Mosaic停止: -8分 (最大要因)")
-    print(f"   軽量MixUp: -1分")
-    print(f"   DataLoader最適化: -1分")
-    print(f"   その他最適化: -1分")
-    print(f"   合計短縮: 約11分 (21分 → 10分)")
+    # ★★★ 期待される改善効果 ★★★
+    print(f"📊 期待される改善効果:")
+    print(f"   Val Loss: 43.45 → 25-30 (30-40%改善)")
+    print(f"   学習安定性: 大幅向上")
+    print(f"   検出信頼度: 初回の高信頼度検出期待")
+    print(f"   エポック時間: 21分 → 12-15分")
     
-    # 精度とのトレードオフ
-    print(f"🎯 精度とのトレードオフ:")
-    print(f"   Mosaic効果損失: -2-3% (データ多様性低下)")
-    print(f"   MixUp効果維持: +1-2% (効率的拡張)")
-    print(f"   Step 5効果維持: CIoU+Focal効果継続")
-    print(f"   実質的影響: 軽微 (時間効率を重視)")
+    # 成功判定基準
+    print(f"✅ 成功判定基準:")
+    print(f"   1. Val Loss < 30.0 (今回目標)")
+    print(f"   2. conf > 0.5 の検出が出現")
+    print(f"   3. Train/Val差 < 2倍")
+    print(f"   4. 学習曲線の安定化")
     
-    # 成功判定
-    print(f"📋 Lite版成功判定:")
-    print(f"   ✅ 大成功: Val < 40 かつ 時間 < 12分")
-    print(f"   ✅ 成功: Val < 42 かつ 時間 < 15分")
-    print(f"   🤔 要検討: 時間 > 15分")
-    
-    # 次ステップ計画
-    print(f"🚀 成功時の次ステップ:")
-    print(f"   1. Step 7: 後処理最適化 (Soft-NMS等)")
-    print(f"   2. mAP測定システム実装")
-    print(f"   3. Phase 4最終調整")
-    print(f"   4. 必要に応じてMosaic再導入検討")
+    # 次フェーズ判断
+    print(f"🚀 次フェーズ判断:")
+    print(f"   続行: Val Loss < 30.0")
+    print(f"   方針転換: Val Loss > 35.0のまま")
+    print(f"   緊急見直し: 5エポックで改善なし")

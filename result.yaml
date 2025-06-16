@@ -1,0 +1,15 @@
+##STEP5
+📈 Epoch [ 1/35] Train: 358.0379 Val: 144.4464 Time: 567.2s LR: 0.000150
+📈 Epoch [ 2/35] Train: 46.6118 Val: 50.1918 Time: 567.7s LR: 0.000149
+📈 Epoch [ 3/35] Train: 37.9507 Val: 48.6039 Time: 568.5s LR: 0.000147
+📈 Epoch [ 4/35] Train: 35.1231 Val: 44.5199 Time: 567.6s LR: 0.000145
+📈 Epoch [ 5/35] Train: 34.5386 Val: 42.0730 Time: 569.6s LR: 0.000143
+
+##STEP6
+📈 Epoch [ 1/35] Train: 150.6311 Val: 181.6244 Time: 1167.9s LR: 0.000150
+📈 Epoch [ 2/35] Train: 77.4275 Val: 57.1196 Time: 1159.3s LR: 0.000149
+📈 Epoch [ 3/35] Train: 53.2062 Val: 157.5805 Time: 1151.5s LR: 0.000147
+📈 Epoch [ 4/35] Train: 43.3134 Val: 58.6449 Time: 1154.1s LR: 0.000145
+📈 Epoch [ 5/35] Train: 44.4341 Val: 53.9749 Time: 1139.0s LR: 0.000143
+
+##STEP7

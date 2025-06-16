@@ -1,7 +1,10 @@
+# improved_augmentation.py - サーマル画像最適化データ拡張
+
 import torch
 import cv2
 import numpy as np
 import random
+import os  # ★★★ 追加: DataLoaderエラー修正 ★★★
 from torch.utils.data import Dataset
 import torch.nn.functional as F
 
